@@ -1,0 +1,101 @@
+================================================================================
+                    АРХИТЕКТУРА ПРОЕКТА OperAI
+                    Esscale Group
+================================================================================
+
+СТРУКТУРА ПРОЕКТА
+=================
+
+operAIversion1/
+│
+├── bot/
+│   ├── docker-compose.yml
+│   │
+│   ├── db/
+│   │   └── init.sql
+│   │
+│   ├── redis/
+│   │   ├── Dockerfile
+│   │   ├── redis-entrypoint.sh
+│   │   └── redis.conf.template
+│   │
+│   └── server_bot/
+│       ├── dockerfile
+│       │
+│       ├── requirements/
+│       │   └── requirements.txt
+│       │
+│       └── src/
+│           ├── main.py
+│           │
+│           └── include/
+│               ├── config.py
+│               ├── utilits.py
+│               │
+│               ├── bot/
+│               │   ├── kb.py
+│               │   ├── router.py
+│               │   └── states.py
+│               │
+│               ├── cash/
+│               │   ├── cash.py
+│               │   └── connect_redis.py
+│               │
+│               ├── db/
+│               │   ├── connect_db.py
+│               │   └── db.py
+│               │
+│               └── logs/
+│                   ├── log.py
+│                   └── log_save.py
+│
+├── miniApp/
+│   ├── dockerfile
+│   ├── index.html
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── vite.config.ts
+│   ├── .eslintrc.json
+│   ├── docker-compose.yml
+│   │
+│   ├── server/
+│   │   ├── dockerfile
+│   │   ├── main.py
+│   │   ├── requirements.txt
+│   │   │
+│   │   ├── api/
+│   │   │   └── routers.py
+│   │   │
+│   │   ├── core/
+│   │   │   ├── config.py
+│   │   │   ├── credentials.json
+│   │   │   ├── google_service.py
+│   │   │   └── test.py
+│   │   │
+│   │   └── models/
+│   │       └── schemas.py
+│   │
+│   └── src/
+│       ├── main.tsx
+│       ├── app.tsx
+│       │
+│       ├── components/
+│       │   ├── PositionsInput.tsx
+│       │   └── QuestionsInput.tsx
+│       │
+│       ├── form/
+│       │   ├── formDirPage.tsx
+│       │   └── formEmpPage.tsx
+│       │
+│       ├── images/
+│       │   └── operAI.svg
+│       │
+│       └── styles/
+│           └── formPage.css
+│
+├── build.bat
+├── delete.bat
+├── Readme.md
+├── ARCHITECTURE.txt
+├── .gitignore
+└── .gitattributes

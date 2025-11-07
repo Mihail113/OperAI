@@ -1,0 +1,28 @@
+# Runtime-only образ, без сборки Python-кода
+FROM debian:bookworm-slim
+
+# Рантайм-зависимости для бинарника
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    libstdc++6 libgcc-s1 libpq5 libssl3 libffi8 libgomp1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Директории для логов и загрузок
+RUN mkdir -p /app/logs /app/uploads
+
+# Копируем заранее собранный бинарник
+COPY main.bin /app/main.bin
+
+# Базовые переменные окружения (без Python runtime)
+ENV PYTHONUTF8=1 \
+    PYTHONIOENCODING=UTF-8 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+RUN chmod +x /app/main.bin
+
+# Запуск готового бинарника
+ENTRYPOINT ["/app/main.bin"]

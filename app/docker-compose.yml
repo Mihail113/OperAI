@@ -1,0 +1,77 @@
+services:
+  redis:
+    build:
+      context: ./redis
+      dockerfile: Dockerfile
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    expose:
+      - "6379"
+    networks:
+      - app-network
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1'
+
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_LOCAL: "1"
+      TELEGRAM_VERBOSITY: "2"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    ports:
+      - "8081:8081"
+    expose:
+      - "8081"
+    networks:
+      - app-network
+
+  server_bot:
+    build:
+      context: ./server_bot
+      dockerfile: dockerfile
+    environment:
+      WEBAPP_URL: ${WEBAPP_URL}
+      BOT_TOKEN: ${BOT_TOKEN}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      TRANSCRIBE_SERVER: ${TRANSCRIBE_SERVER}
+      LOCAL_TG_SERVER: ${LOCAL_TG_SERVER}
+    depends_on:
+      - telegram-bot-api
+    ports:
+      - 443:443
+    networks:
+      - app-network
+    volumes:
+      - ./server_bot/log_files:/app/logs
+      - ./server_bot/uploads:/app/uploads
+      - telegram-bot-api-data:/var/lib/telegram-bot-api:rw
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  telegram-bot-api-data:
+  redis_data:
+
+networks:
+  app-network:
+    driver: bridge
