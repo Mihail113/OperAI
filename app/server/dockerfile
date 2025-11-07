@@ -1,0 +1,27 @@
+# ---------- Runtime ----------
+FROM debian:bookworm-slim AS runtime
+
+# Рантайм-библиотеки (libpq для PostgreSQL, libssl для HTTPS, libffi для asyncio)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    libstdc++6 libgcc-s1 libpq5 libssl3 libffi8 libgomp1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# UTF-8 режим для корректной работы строк
+ENV PYTHONUTF8=1 \
+    PYTHONIOENCODING=UTF-8 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# Логи и рабочая директория
+WORKDIR /app
+RUN mkdir -p /app/logs
+
+# Копируем собранный standalone-директорию
+COPY main.bin /app/main.bin
+
+RUN chmod +x /app/main.bin
+
+# Запуск бинарника (без исходников)
+ENTRYPOINT ["/app/main.bin"]

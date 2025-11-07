@@ -1,0 +1,2 @@
+2025-11-07 15:31:36,257 - INFO - cache_meeting_delete: CACHE HIT (hit=1, miss=0, hit%=100.0)
+2025-11-07 15:31:38,549 - INFO - cache_meeting_delete: CACHE HIT (hit=2, miss=0, hit%=100.0)

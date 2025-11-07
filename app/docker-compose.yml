@@ -1,0 +1,59 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - frontend
+      - server
+    networks:
+      - bot_app-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    environment:
+      VITE_API_URL: ${VITE_API_URL}
+    expose:
+      - 4173
+    depends_on:
+      - server
+    networks:
+      - bot_app-network
+
+  server:
+    build:
+      context: ./server
+      dockerfile: dockerfile
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      BOT_INTERNAL_URL: ${BOT_INTERNAL_URL}
+    networks:
+      - bot_app-network
+    expose:
+      - 5001
+    volumes:
+      - ./server/log_files:/app/logs
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  bot_app-network:
+    driver: bridge
