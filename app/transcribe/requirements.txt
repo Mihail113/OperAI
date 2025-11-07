@@ -1,0 +1,8 @@
+numpy<2.0,>=1.24.0  # Для совместимости с Nuitka
+grpcio
+grpcio-tools
+python-docx
+reportlab
+faster-whisper
+python-dotenv
+openai

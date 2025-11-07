@@ -1,0 +1,30 @@
+# ---------- Runtime ----------
+FROM debian:bookworm-slim AS runtime
+
+# Рантайм-библиотеки и утилиты для сервиса транскрибации
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    fonts-dejavu fonts-liberation \
+    libstdc++6 libgcc-s1 libssl3 libffi8 libgomp1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# UTF-8 режим Python + локаль, чтобы не ловить UnicodeEncodeError
+ENV PYTHONUTF8=1 \
+    PYTHONIOENCODING=UTF-8 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+    
+WORKDIR /app
+
+COPY prompt.txt /app/prompt.txt
+# Артефакты Nuitka
+COPY server.bin /app/server.bin
+
+RUN chmod +x /app/server.bin
+# Каталоги для результатов/артефактов
+RUN mkdir -p /app/transcribe /app/summury
+
+# Запуск бинарника
+ENTRYPOINT ["/app/server.bin"]

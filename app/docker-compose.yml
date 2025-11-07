@@ -1,0 +1,28 @@
+services:
+  transcribe:
+      build:
+        context: ./transcribe
+        dockerfile: dockerfile
+      environment:
+        WHISPER_MODEL: ${WHISPER_MODEL}
+        BEAM_SIZE: ${BEAM_SIZE}
+        FFMPEG_PATH: /usr/bin/ffmpeg
+        OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+        OR_MODEL: ${OR_MODEL}
+        OR_TEMPERATURE: ${OR_TEMPERATURE}
+        OR_MAX_TOKENS: ${OR_MAX_TOKENS}
+        OR_SITE_URL: ${OR_SITE_URL}
+        OR_SITE_TITLE: ${OR_SITE_TITLE:-Transcription Service}
+        OR_NO_REASONING: ${OR_NO_REASONING}
+        PROMPT_FILE: /app/prompt.txt
+        PDF_TTF: ${PDF_TTF}
+        PDF_TTF_BOLD: ${PDF_TTF_BOLD}
+        TRANSCRIBE_ROOT: /app/transcribe
+        SUMMARY_ROOT: /app/summury
+        KEEP_TXT: ${KEEP_TXT}
+      volumes:
+        - ./transcribe/prompt_system.txt:/app/prompt_system.txt:ro
+        - ./transcribe/transcribe:/app/transcribe
+        - ./transcribe/summury:/app/summury
+      ports:
+        - "50058:50058"

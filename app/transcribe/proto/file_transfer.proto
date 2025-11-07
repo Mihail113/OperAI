@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package file_transfer;
+
+service FileTransferService {
+  // Загрузка файлов на сервер
+  rpc UploadFile(stream FileChunk) returns (UploadStatus) {}
+  
+  // Скачивание конспектов и расшифровок
+  rpc DownloadSummary(FileRequest) returns (stream FileChunk) {}
+  rpc DownloadTranscription(FileRequest) returns (stream FileChunk) {}
+  
+  // Уведомления от сервера (Server Streaming)
+  rpc SubscribeToNotifications(Empty) returns (stream Notification) {}
+}
+
+// Сообщения для передачи файлов
+message FileChunk {
+  bytes content = 1;
+  int64 meeting_id = 2;
+  string timestamp = 3;
+  int32 chunk_index = 4;
+  int32 total_chunks = 5;
+}
+
+message UploadStatus {
+  int64 meeting_id = 1;
+  bool success = 2;
+  string message = 3;
+  int32 bytes_received = 4;
+}
+
+message FileRequest {
+  FileFormat file_format = 1;
+  int64 meeting_id = 2;
+  string timestamp = 3;
+}
+
+// Сообщения для уведомлений
+message Notification {
+  string id = 1;
+  NotificationType type = 2;
+  string title = 3;
+  string message = 4;
+  string filename = 5;
+  string timestamp = 6;     // Время создания уведомления
+}
+
+enum FileFormat {
+  UNKNOWN = 0;
+  PDF = 1;
+  DOCX = 2;
+}
+
+enum NotificationType {
+  INFO = 0;
+  WARNING = 1;
+  ERROR = 2;
+  SUCCESS = 3;
+  PROCESSING_COMPLETE = 4;  // Обработка завершена
+  REPORT_READY = 5;         // Конспект готов
+}
+
+message Empty {}
