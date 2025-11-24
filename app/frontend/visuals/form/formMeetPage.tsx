@@ -138,16 +138,6 @@ export const FormMeetPage: React.FC = () => {
     );
   };
 
-  // // Для отображения подписей выбранных участников
-  // const selectedLabels = useMemo(
-  //   () =>
-  //     selectedMembers.map(
-  //       (u) => subordinateOptions.find((o) => o.value === u)?.label || u
-  //     ),
-  //   [selectedMembers, subordinateOptions]
-  // );
-
-
   // helper для отправки
   async function putCreateMeeting(payload: {
     topic: string;
@@ -183,6 +173,12 @@ export const FormMeetPage: React.FC = () => {
     return data;
   }
 
+  const parseLocalDateTime = (local: string) => {
+    if (!local) return null;
+    const parsed = new Date(local);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
   const toIsoUtcFromLocal = (local: string) => {
     return local + ":00";
   };
@@ -196,6 +192,16 @@ export const FormMeetPage: React.FC = () => {
     }
 
     const creator = username;
+
+    const meetingDate = parseLocalDateTime(meetingTime);
+    if (!meetingDate) {
+      alert('Некорректные дата и время встречи');
+      return;
+    }
+    if (meetingDate.getTime() < Date.now()) {
+      alert('Дата и время встречи должны быть не ранее текущего момента');
+      return;
+    }
     // if (!creator) {
     //   alert('Не удалось определить ник создателя');
     //   return;

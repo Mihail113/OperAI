@@ -9,26 +9,28 @@ const FIRST4 = [
 ];
 const OPTIONAL_LABEL = "Отчество (при наличии)";
 
+type Manager = { username: string; fullname: string };
+
+type QuestionsResponse = {
+  questions: string[];
+};
+
 export const FormEmpPage: React.FC = () => {
   const [serverQuestions, setServerQuestions] = useState<string[]>([]);
-  const [formatErrorIndexes, setFormatErrorIndexes] = useState<number[]>([]);
-  const [selfErrorIndexes, setSelfErrorIndexes] = useState<number[]>([]);
+  // const [formatErrorIndexes, setFormatErrorIndexes] = useState<number[]>([]);
+  // const [selfErrorIndexes, setSelfErrorIndexes] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [companyName, setCompanyName] = useState<string | null>(null);
 
-  const [managers, setManagers] = useState<string[]>([""]);
+  // State for managers selection
+  const [possibleManagers, setPossibleManagers] = useState<Manager[]>([]);
+  const [managersLoading, setManagersLoading] = useState(false);
+  const [managersFetchError, setManagersFetchError] = useState<string | null>(null);
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedManagers, setSelectedManagers] = useState<string[]>([]);
   const [mgrError, setMgrError] = useState<string | null>(null);
-  const managerRefs = useRef<Array<HTMLInputElement | null>>([]);
-
-  const addManager = () => setManagers((prev) => [...prev, ""]);
-  const removeManager = (index: number) =>
-    setManagers((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
-  const updateManager = (index: number, value: string) =>
-    setManagers((prev) => {
-      const next = [...prev];
-      next[index] = value;
-      return next;
-    });
 
   const allQuestions = useMemo(() => [...FIRST4, ...serverQuestions], [serverQuestions]);
   const [answers, setAnswers] = useState<string[]>([]);
@@ -54,13 +56,23 @@ export const FormEmpPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const name = params.get("company_name");
+    setCompanyName(name);
+  }, []);
+
+  useEffect(() => {
     // const tg = (window as any).Telegram?.WebApp;
     // const username: string | undefined = `@${tg?.initDataUnsafe?.user?.username}`
     // if (!username) return;
-    if (!actorUsername) return; // ждём корректный ник
+    if (!actorUsername || !companyName) return; // ждём корректные данные
 
     setLoading(true);
-    fetch(`${APIURL}/get_questions?username=${encodeURIComponent(actorUsername)}`)
+    fetch(
+      `${APIURL}/get_questions?username=${encodeURIComponent(actorUsername)}&company_name=${encodeURIComponent(
+        companyName
+      )}`
+    )
       .then(async r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<QuestionsResponse>;
@@ -70,7 +82,18 @@ export const FormEmpPage: React.FC = () => {
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
-  }, [APIURL, actorUsername]);
+
+    // Fetch company workers for manager selection
+    setManagersLoading(true);
+    fetch(`${APIURL}/get_company_workers?company_name=${encodeURIComponent(companyName)}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((json) => setPossibleManagers(json.workers ?? []))
+      .catch((e) => setManagersFetchError(e.message))
+      .finally(() => setManagersLoading(false));
+  }, [APIURL, actorUsername, companyName]);
 
   const handleAnswerChange = (index: number, value: string) => {
     setAnswers(prev => {
@@ -80,102 +103,90 @@ export const FormEmpPage: React.FC = () => {
     });
   };
 
+  // Convert to options for search
+  const managerOptions = useMemo(
+    () =>
+      possibleManagers.map((s) => ({
+        value: s.username,
+        label: `${s.username} — ${s.fullname}`,
+        raw: s,
+      })),
+    [possibleManagers]
+  );
+
+  // Search filter
+  const filteredManagers = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return managerOptions;
+    return managerOptions.filter(
+      (o) =>
+        o.value.toLowerCase().includes(q) || // by tg-username
+        o.raw.fullname.toLowerCase().includes(q) // by fullname
+    );
+  }, [searchTerm, managerOptions]);
+
+  const handleSelectManager = (name: string) => {
+    setSelectedManagers((prev) =>
+      prev.includes(name) ? prev.filter((m) => m !== name) : [...prev, name]
+    );
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // очистить прошлые маркеры и ошибку
-    setSelfErrorIndexes([]);
-    setFormatErrorIndexes([]);
     setMgrError(null);
-
-    const managersWithIndex = managers
-      .map((m, i) => ({ value: m.trim(), index: i }))
-      .filter(({ value }) => value.length > 0);
-    const trimmedManagers = managersWithIndex.map(({ value }) => value);
-
-    // форматная проверка никнеймов
-    const badStarts = managersWithIndex
-      .filter(({ value }) => !value.startsWith("@"))
-      .map(({ index }) => index);
-    const tooShort = managersWithIndex
-      .filter(({ value }) => value.length < 4)
-      .map(({ index }) => index);
-    if (badStarts.length > 0 || tooShort.length > 0) {
-      setFormatErrorIndexes([...new Set([...badStarts, ...tooShort])]);
-      if (badStarts.length > 0 && tooShort.length > 0) {
-        setMgrError('Никнэйм должен начинаться с "@" и быть в длину хотя бы 4 символа');
-      }
-      else if (badStarts.length > 0) {
-        setMgrError('Никнэйм должен начинаться с "@"');
-      } else {
-        setMgrError("Никнэйм должен быть в длину хотя бы 4 символа");
-      }
-      const firstErr = managerRefs.current[(badStarts[0] ?? tooShort[0])!];
-      firstErr?.focus();
-      firstErr?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setError(null);
+    if (!companyName) {
+      setError("Не удалось определить компанию. Откройте форму из приглашения ещё раз.");
       return;
     }
 
-    // проверяем, не указал ли пользователь себя
-    const selfErrorIdxs = managersWithIndex
-      .filter(({ value }) => value === actorUsername)
-      .map(({ index }) => index);
-    if (selfErrorIdxs.length > 0) {
-      setSelfErrorIndexes(selfErrorIdxs);
-      setMgrError("Вы не можете указать себя в качестве собственного начальника");
-      const firstErr = managerRefs.current[selfErrorIdxs[0]];
-      firstErr?.focus();
-      firstErr?.scrollIntoView({ behavior: "smooth", block: "center" });
-      return;
-    }
-
-    // 3) если после очистки нет ни одного менеджера
-    if (trimmedManagers.length === 0) {
-      setMgrError("Укажите никнейм хотя бы одного начальника");
-      const first = managerRefs.current.find((el) => el);
-      first?.focus();
-      first?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (selectedManagers.length === 0) {
+      setMgrError("Укажите хотя бы одного начальника");
       return;
     }
 
     const normalizedAnswers = answers.map((a) => (a ?? "").trim());
 
-    // словарь ответов: "1" -> список начальников, далее — ответы на вопросы
+    // словарь ответов: "managers" -> список начальников, далее — ответы на вопросы
     const payload: Record<string, string | string[]> = {};
-    payload["1"] = trimmedManagers;
-    for (let i = 0; i < normalizedAnswers.length; i++) {
-      payload[String(i + 2)] = normalizedAnswers[i];
+    payload["managers"] = selectedManagers;
+    for (let i = 0; i < FIRST4.length; i++) {
+      payload[String(i) + "_" + FIRST4[i]] = normalizedAnswers[i];
+    }
+    for (let i = 0; i < serverQuestions.length; i++) {
+      payload[String(i + FIRST4.length) + "_" + serverQuestions[i]] = normalizedAnswers[i + FIRST4.length];
     }
 
     // отправка на связующий сервер
-    const res = await fetch(
-      `${APIURL}/submit_emp_answers?actor_username=${encodeURIComponent(actorUsername)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answers: payload }),
-      });
+    try {
+      const res = await fetch(
+        `${APIURL}/submit_emp_answers?actor_username=${encodeURIComponent(actorUsername)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ company_name: companyName, answers: payload }),
+        });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`HTTP ${res.status}: ${text}`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      let data: { status?: string } = {};
+      data = await res.json();
+
+      if (res.ok && data.status === "ok") {
+        // успешное завершение — закрываем мини‑апп
+        (window as any).Telegram?.WebApp?.close();
+        return;
+      }
+
+      // иначе считаем, что ошибка
+      setMgrError("Произошла ошибка при сохранении данных.");
+    } catch (e: any) {
+      setMgrError(e.message || "Ошибка соединения");
     }
-
-    // читаем JSON даже при !res.ok, но основной сценарий — 200 OK
-    let data: { status?: string } = {};
-    data = await res.json();
-
-    if (res.ok && data.status === "ok") {
-      // успешное завершение — закрываем мини‑апп
-      (window as any).Telegram?.WebApp?.close();
-      return;
-    }
-
-    // иначе считаем, что ни одного начальника не нашли — обнуляем список начальников
-    setManagers([""]);
-    setMgrError("Ни один из введенных ранее начальников не был найден в базе данных, попробуйте ещё раз");
-    // сбросим refs, чтобы фокус корректно встал на единственное поле при следующем рендере
-    managerRefs.current = [];
   };
 
   return (
@@ -188,38 +199,56 @@ export const FormEmpPage: React.FC = () => {
 
         <form onSubmit={handleSubmit}>
           <div className="question-block">
-            <label>Введите никнеймы телеграм своих непосредственных начальников</label>
+            <label>Выберите своих непосредственных начальников</label>
 
-            {managers.map((m, i) => (
-              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-                <input
-                  type="text"
-                  placeholder="@username"
-                  value={m}
-                  onChange={(e) => updateManager(i, e.target.value)}
-                  ref={(el) => (managerRefs.current[i] = el)}
-                  // если индекс в ошибочных, рисуем красную рамку
-                  style={
-                    selfErrorIndexes.includes(i) || formatErrorIndexes.includes(i)
-                      ? { border: "1px solid red" }
-                      : undefined
-                  }
-                />
-                <button
-                  type="button"
-                  onClick={() => removeManager(i)}
-                  disabled={managers.length === 1}
-                >
-                  Удалить
-                </button>
+            <input
+              type="text"
+              placeholder="Начните вводить ФИО или @ник..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+
+            {managersLoading && <div>Загрузка списка сотрудников...</div>}
+            {managersFetchError && <div style={{ color: "crimson" }}>Ошибка: {managersFetchError}</div>}
+
+            {searchTerm && (
+              <div className="custom-select">
+                {filteredManagers.length > 0 ? (
+                  filteredManagers.map((o) => (
+                    <div
+                      key={o.value}
+                      className={`option ${selectedManagers.includes(o.value) ? "selected" : ""}`}
+                      onClick={() => handleSelectManager(o.value)}
+                    >
+                      {o.label}
+                    </div>
+                  ))
+                ) : (
+                  <p style={{ marginTop: 8, color: "#888" }}>Совпадений нет</p>
+                )}
               </div>
-            ))}
+            )}
 
-            <div style={{ marginTop: 8 }}>
-              <button type="button" onClick={addManager}>
-                Добавить начальника
-              </button>
-            </div>
+            {selectedManagers.length > 0 && (
+              <div className="selected-list">
+                <h4>Выбранные начальники:</h4>
+                <ul>
+                  {selectedManagers.map((m) => (
+                    <li key={m}>
+                      {m}{" "}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedManagers((prev) => prev.filter((x) => x !== m))
+                        }
+                      >
+                        ✖
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {mgrError && (
               <div style={{ color: "crimson", marginTop: 6 }}>{mgrError}</div>
@@ -246,4 +275,3 @@ export const FormEmpPage: React.FC = () => {
     </div>
   );
 };
-
