@@ -7,6 +7,7 @@ type Meeting = {
   topic: string;
   members: string[];
   time: string;
+  duration: number | null;  // продолжительность в минутах
   link: string;
 };
 
@@ -29,6 +30,7 @@ export const FormMeetPage: React.FC = () => {
   const [origTopic, setOrigTopic] = useState<string>("");
   const [origMembers, setOrigMembers] = useState<string[]>([]);
   const [origTime, setOrigTime] = useState<string>("");
+  const [origDuration, setOrigDuration] = useState<string>("");
   const [origLink, setOrigLink] = useState<string>("");
 
   // Хелперы сравнения без учета порядка участников
@@ -75,7 +77,7 @@ export const FormMeetPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  });
+  }, [username]);
 
   useEffect(() => {
     //if (!username) return;
@@ -110,6 +112,7 @@ export const FormMeetPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [meetingTime, setMeetingTime] = useState("");
+  const [meetingDuration, setMeetingDuration] = useState("");  // продолжительность в минутах
   const [meetingLink, setMeetingLink] = useState("");
   const [meetingTopic, setMeetingTopic] = useState("");
 
@@ -118,8 +121,9 @@ export const FormMeetPage: React.FC = () => {
     return !sameString(meetingTopic, origTopic)
       || !sameArray(selectedMembers, origMembers)
       || !sameString(meetingTime, origTime)
+      || !sameString(meetingDuration, origDuration)
       || !sameString(meetingLink, origLink);
-  }, [editId, meetingTopic, selectedMembers, meetingTime, meetingLink, origTopic, origMembers, origTime, origLink]);
+  }, [editId, meetingTopic, selectedMembers, meetingTime, meetingDuration, meetingLink, origTopic, origMembers, origTime, origDuration, origLink]);
 
   // Поиск по подчинённым
   const filteredSubordinates = useMemo(() => {
@@ -191,6 +195,17 @@ export const FormMeetPage: React.FC = () => {
       return;
     }
 
+    const durationNum = meetingDuration ? parseInt(meetingDuration, 10) : null;
+    if (meetingDuration && (isNaN(durationNum as number) || (durationNum as number) <= 0)) {
+      alert('Введите продолжительность встречи в минутах');
+      return;
+    }
+    // Проверка на целое число
+    if (meetingDuration && !Number.isInteger(Number(meetingDuration))) {
+      alert('Введите целое число');
+      return;
+    }
+
     const creator = username;
 
     const meetingDate = parseLocalDateTime(meetingTime);
@@ -218,6 +233,7 @@ export const FormMeetPage: React.FC = () => {
           members: selectedMembers,
           creator,
           time: isoTime,
+          duration: durationNum,
           link: meetingLink.trim(),
         };
 
@@ -231,6 +247,7 @@ export const FormMeetPage: React.FC = () => {
           topic: payload.topic,
           members: payload.members,
           time: payload.time,
+          duration: payload.duration,
           link: payload.link,
         };
 
@@ -256,6 +273,9 @@ export const FormMeetPage: React.FC = () => {
     if (!sameString(meetingTime, origTime)) {
       payload.time = toIsoUtcFromLocal(meetingTime);
     }
+    if (!sameString(meetingDuration, origDuration)) {
+      payload.duration = durationNum;
+    }
     if (!sameArray(selectedMembers, origMembers)) {
       const { added, removed } = computeMembersDiff(origMembers, selectedMembers);
       if (added.length) payload.added_members = added;
@@ -273,6 +293,7 @@ export const FormMeetPage: React.FC = () => {
               topic: payload.topic ?? m.topic,
               link: payload.link ?? m.link,
               time: payload.time ?? m.time,
+              duration: payload.duration !== undefined ? payload.duration : m.duration,
               members: Array.isArray(payload.added_members) || Array.isArray(payload.removed_members)
                 ? selectedMembers
                 : m.members,
@@ -292,12 +313,14 @@ export const FormMeetPage: React.FC = () => {
     setMeetingTopic(meeting.topic); // Подставляем тему
     setSelectedMembers(meeting.members);
     setMeetingTime(meeting.time.slice(0, 16));
+    setMeetingDuration(meeting.duration != null ? String(meeting.duration) : "");
     setMeetingLink(meeting.link);
 
     // Сохраняем «до» для сравнения
     setOrigTopic(meeting.topic);
     setOrigMembers(meeting.members);
     setOrigTime(meeting.time.slice(0, 16));
+    setOrigDuration(meeting.duration != null ? String(meeting.duration) : "");
     setOrigLink(meeting.link);
   };
 
@@ -309,6 +332,7 @@ export const FormMeetPage: React.FC = () => {
         topic: m.topic,
         members: m.members,
         time: m.time,
+        duration: m.duration,
         link: m.link,
         creator: username,
       };
@@ -345,6 +369,7 @@ export const FormMeetPage: React.FC = () => {
     setSearchTerm("");
     setSelectedMembers([]);
     setMeetingTime("");
+    setMeetingDuration("");
     setMeetingLink("");
   };
 
@@ -419,6 +444,27 @@ export const FormMeetPage: React.FC = () => {
             onChange={(e) => setMeetingTime(e.target.value)}
           />
 
+          <label>Продолжительность встречи (мин.):</label>
+          <input
+            type="number"
+            placeholder="Например: 60"
+            min="1"
+            step="1"
+            value={meetingDuration}
+            onChange={(e) => setMeetingDuration(e.target.value)}
+            onInvalid={(e) => {
+              const input = e.target as HTMLInputElement;
+              if (input.validity.stepMismatch) {
+                input.setCustomValidity("Введите целое число");
+              } else {
+                input.setCustomValidity("");
+              }
+            }}
+            onInput={(e) => {
+              (e.target as HTMLInputElement).setCustomValidity("");
+            }}
+          />
+
           <label>Ссылка на встречу:</label>
           <input
             type="url"
@@ -431,24 +477,18 @@ export const FormMeetPage: React.FC = () => {
             type="submit"
             className="submit-btn"
             disabled={
-              editId === null
-                ? (!meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingLink.trim())
-                : !isEditChanged
+              !meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
             }
             aria-disabled={
-              editId === null
-                ? (!meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingLink.trim())
-                : !isEditChanged
+              !meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
             }
             data-disabled={
-              editId === null
-                ? (!meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingLink.trim())
-                : !isEditChanged
-                  ? "true"
-                  : undefined
+              (!meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged))
+                ? "true"
+                : undefined
             }
             title={
-              editId === null
+              (!meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim())
                 ? "Заполните все поля"
                 : "Нет изменений"
             }>
@@ -481,6 +521,9 @@ export const FormMeetPage: React.FC = () => {
               </p>
               <p>
                 <strong>Время:</strong> {m.time.slice(0, 16).replace('T', ' ')}
+              </p>
+              <p>
+                <strong>Продолжительность:</strong> {m.duration != null ? `${m.duration} мин.` : '-'}
               </p>
               <p>
                 <strong>Ссылка:</strong>{" "}

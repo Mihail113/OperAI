@@ -109,6 +109,7 @@ export const FormDirPage: React.FC = () => {
             <li>Фамилия</li>
             <li>Отчество (при наличии)</li>
             <li>Город</li>
+            <li>Расписание (дни недели и рабочие часы)</li>
           </ol>
         </div>
         <form onSubmit={onSubmit}>
