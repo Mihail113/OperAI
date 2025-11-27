@@ -42,7 +42,7 @@ export const FormEmpPage: React.FC = () => {
   // const [selfErrorIndexes, setSelfErrorIndexes] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [companyName, setCompanyName] = useState<string | null>(null);
+  const [companyId, setCompanyId] = useState<number | null>(null);
 
   // State for managers selection
   const [possibleManagers, setPossibleManagers] = useState<Manager[]>([]);
@@ -86,21 +86,19 @@ export const FormEmpPage: React.FC = () => {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const name = params.get("company_name");
-    setCompanyName(name);
+    const idParam = params.get("company_id");
+    setCompanyId(idParam ? parseInt(idParam, 10) : null);
   }, []);
 
   useEffect(() => {
     // const tg = (window as any).Telegram?.WebApp;
     // const username: string | undefined = `@${tg?.initDataUnsafe?.user?.username}`
     // if (!username) return;
-    if (!actorUsername || !companyName) return; // ждём корректные данные
+    if (!actorUsername || !companyId) return; // ждём корректные данные
 
     setLoading(true);
     fetch(
-      `${APIURL}/get_questions?username=${encodeURIComponent(actorUsername)}&company_name=${encodeURIComponent(
-        companyName
-      )}`
+      `${APIURL}/get_questions?username=${encodeURIComponent(actorUsername)}&company_id=${companyId}`
     )
       .then(async r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -114,7 +112,7 @@ export const FormEmpPage: React.FC = () => {
 
     // Fetch company workers for manager selection
     setManagersLoading(true);
-    fetch(`${APIURL}/get_company_workers?company_name=${encodeURIComponent(companyName)}`)
+    fetch(`${APIURL}/get_company_workers?company_id=${companyId}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -122,7 +120,7 @@ export const FormEmpPage: React.FC = () => {
       .then((json) => setPossibleManagers(json.workers ?? []))
       .catch((e) => setManagersFetchError(e.message))
       .finally(() => setManagersLoading(false));
-  }, [APIURL, actorUsername, companyName]);
+  }, [APIURL, actorUsername, companyId]);
 
   const handleAnswerChange = (index: number, value: string) => {
     setAnswers(prev => {
@@ -277,7 +275,7 @@ export const FormEmpPage: React.FC = () => {
     setError(null);
     setScheduleError(null);
     
-    if (!companyName) {
+    if (!companyId) {
       setError("Не удалось определить компанию. Откройте форму из приглашения ещё раз.");
       return;
     }
@@ -325,7 +323,7 @@ export const FormEmpPage: React.FC = () => {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ company_name: companyName, answers: payload }),
+          body: JSON.stringify({ company_id: companyId, answers: payload }),
         });
 
       if (!res.ok) {
