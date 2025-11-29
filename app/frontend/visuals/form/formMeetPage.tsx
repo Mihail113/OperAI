@@ -6,17 +6,19 @@ type Meeting = {
   id: number;
   topic: string;
   members: string[];
+  member_ids: number[];
   time: string;
   duration: number | null;  // продолжительность в минутах
   link: string;
 };
 
-type Subordinate = { username: string; fullname: string };
+type Subordinate = { id: number; username: string; fullname: string };
 
 // toDo: нужно реализовать удаление встреч и редактирование встреч, а так же подтягивание всех встреч при открытии мини апп.
 
 export const FormMeetPage: React.FC = () => {
   const [subs, setSubs] = useState<Subordinate[]>([]);
+  const [managerId, setManagerId] = useState<number | null>(null);
   const [subsLoading, setSubsLoading] = useState(false);
   const [subsError, setSubsError] = useState<string | null>(null);
 
@@ -28,22 +30,22 @@ export const FormMeetPage: React.FC = () => {
   // Состояния для редактирования
   const [editId, setEditId] = useState<number | null>(null);
   const [origTopic, setOrigTopic] = useState<string>("");
-  const [origMembers, setOrigMembers] = useState<string[]>([]);
+  const [origMemberIds, setOrigMemberIds] = useState<number[]>([]);
   const [origTime, setOrigTime] = useState<string>("");
   const [origDuration, setOrigDuration] = useState<string>("");
   const [origLink, setOrigLink] = useState<string>("");
 
   // Хелперы сравнения без учета порядка участников
   const sameString = (a: string, b: string) => (a ?? "") === (b ?? "");
-  const sameArray = (a: string[], b: string[]) => {
+  const sameNumberArray = (a: number[], b: number[]) => {
     if (a.length !== b.length) return false;
     const A = new Set(a);
     const B = new Set(b);
     return A.difference(B).size === 0;
   };
 
-  // Дифф участников при редактировании
-  const computeMembersDiff = (before: string[], after: string[]) => {
+  // Дифф участников при редактировании (по id)
+  const computeMemberIdsDiff = (before: number[], after: number[]) => {
     const beforeSet = new Set(before);
     const afterSet = new Set(after);
     const added = [...afterSet].filter(x => !beforeSet.has(x));
@@ -59,12 +61,12 @@ export const FormMeetPage: React.FC = () => {
 
   const fetchedOnceRef = useRef(false);
 
-  const fetchMeetings = useCallback(async () => {
+  const fetchMeetings = useCallback(async (creatorId: number) => {
     setLoading(true);
     setError(null);
     try {
       const resp = await fetch(
-        `${API_URL}/get_meetings?username=${encodeURIComponent(username)}`
+        `${API_URL}/get_meetings?id=${creatorId}`
       );
       if (!resp.ok) {
         const text = await resp.text();
@@ -77,7 +79,7 @@ export const FormMeetPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [username]);
+  }, []);
 
   useEffect(() => {
     //if (!username) return;
@@ -85,23 +87,30 @@ export const FormMeetPage: React.FC = () => {
     if (fetchedOnceRef.current) return;
     fetchedOnceRef.current = true;
 
-    fetchMeetings();
-
     setSubsLoading(true);
     fetch(`${API_URL}/get_subordinates?username=${encodeURIComponent(username)}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((json) => setSubs(json.subordinates ?? []))
+      .then((json) => {
+        setSubs(json.subordinates ?? []);
+        const mgrId = json.manager_id ?? null;
+        setManagerId(mgrId);
+        // Загружаем встречи после получения manager_id
+        if (mgrId) {
+          fetchMeetings(mgrId);
+        }
+      })
       .catch((e) => setSubsError(e.message))
       .finally(() => setSubsLoading(false));
-  }, [username]);
+  }, [username, fetchMeetings]);
 
   // Преобразуем в удобные для селектора/поиска опции
   const subordinateOptions = useMemo(
     () =>
       subs.map((s) => ({
+        id: s.id,
         value: s.username,
         label: `${s.username} — ${s.fullname}`,
         raw: s,
@@ -110,7 +119,7 @@ export const FormMeetPage: React.FC = () => {
   );
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [selectedMemberIds, setSelectedMemberIds] = useState<number[]>([]);
   const [meetingTime, setMeetingTime] = useState("");
   const [meetingDuration, setMeetingDuration] = useState("");  // продолжительность в минутах
   const [meetingLink, setMeetingLink] = useState("");
@@ -119,11 +128,11 @@ export const FormMeetPage: React.FC = () => {
   const isEditChanged = useMemo(() => {
     if (editId === null) return false;
     return !sameString(meetingTopic, origTopic)
-      || !sameArray(selectedMembers, origMembers)
+      || !sameNumberArray(selectedMemberIds, origMemberIds)
       || !sameString(meetingTime, origTime)
       || !sameString(meetingDuration, origDuration)
       || !sameString(meetingLink, origLink);
-  }, [editId, meetingTopic, selectedMembers, meetingTime, meetingDuration, meetingLink, origTopic, origMembers, origTime, origDuration, origLink]);
+  }, [editId, meetingTopic, selectedMemberIds, meetingTime, meetingDuration, meetingLink, origTopic, origMemberIds, origTime, origDuration, origLink]);
 
   // Поиск по подчинённым
   const filteredSubordinates = useMemo(() => {
@@ -136,18 +145,20 @@ export const FormMeetPage: React.FC = () => {
     );
   }, [searchTerm, subordinateOptions]);
 
-  const handleSelectMember = (name: string) => {
-    setSelectedMembers((prev) =>
-      prev.includes(name) ? prev.filter((m) => m !== name) : [...prev, name]
+  const handleSelectMember = (id: number) => {
+    setSelectedMemberIds((prev) =>
+      prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
     );
   };
 
   // helper для отправки
   async function putCreateMeeting(payload: {
     topic: string;
-    members: string[];
-    creator: string;
+    member_ids: number[];
+    creator_id: number;
+    creator_username: string;
     time: string;
+    duration: number | null;
     link: string;
   }) {
     const r = await fetch(`${API_URL}/create_meeting`, {
@@ -187,10 +198,17 @@ export const FormMeetPage: React.FC = () => {
     return local + ":00";
   };
 
+  // Получить usernames для выбранных member_ids
+  const getSelectedUsernames = () => {
+    return selectedMemberIds
+      .map(id => subordinateOptions.find(o => o.id === id)?.value)
+      .filter((u): u is string => !!u);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingLink.trim()) {
+    if (!meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingLink.trim()) {
       alert('Заполните все поля');
       return;
     }
@@ -206,7 +224,10 @@ export const FormMeetPage: React.FC = () => {
       return;
     }
 
-    const creator = username;
+    if (!managerId) {
+      alert('Не удалось определить id создателя');
+      return;
+    }
 
     const meetingDate = parseLocalDateTime(meetingTime);
     if (!meetingDate) {
@@ -230,8 +251,9 @@ export const FormMeetPage: React.FC = () => {
       try {
         const payload = {
           topic: meetingTopic.trim(),
-          members: selectedMembers,
-          creator,
+          member_ids: selectedMemberIds,
+          creator_id: managerId,
+          creator_username: username,
           time: isoTime,
           duration: durationNum,
           link: meetingLink.trim(),
@@ -245,7 +267,8 @@ export const FormMeetPage: React.FC = () => {
         const newMeeting: Meeting = {
           id: newId,
           topic: payload.topic,
-          members: payload.members,
+          members: getSelectedUsernames(),
+          member_ids: payload.member_ids,
           time: payload.time,
           duration: payload.duration,
           link: payload.link,
@@ -276,10 +299,10 @@ export const FormMeetPage: React.FC = () => {
     if (!sameString(meetingDuration, origDuration)) {
       payload.duration = durationNum;
     }
-    if (!sameArray(selectedMembers, origMembers)) {
-      const { added, removed } = computeMembersDiff(origMembers, selectedMembers);
-      if (added.length) payload.added_members = added;
-      if (removed.length) payload.removed_members = removed;
+    if (!sameNumberArray(selectedMemberIds, origMemberIds)) {
+      const { added, removed } = computeMemberIdsDiff(origMemberIds, selectedMemberIds);
+      if (added.length) payload.added_member_ids = added;
+      if (removed.length) payload.removed_member_ids = removed;
     }
 
     try {
@@ -294,9 +317,12 @@ export const FormMeetPage: React.FC = () => {
               link: payload.link ?? m.link,
               time: payload.time ?? m.time,
               duration: payload.duration !== undefined ? payload.duration : m.duration,
-              members: Array.isArray(payload.added_members) || Array.isArray(payload.removed_members)
-                ? selectedMembers
+              members: Array.isArray(payload.added_member_ids) || Array.isArray(payload.removed_member_ids)
+                ? getSelectedUsernames()
                 : m.members,
+              member_ids: Array.isArray(payload.added_member_ids) || Array.isArray(payload.removed_member_ids)
+                ? selectedMemberIds
+                : m.member_ids,
             }
             : m
         )
@@ -311,14 +337,14 @@ export const FormMeetPage: React.FC = () => {
   const handleEdit = (meeting: Meeting) => {
     setEditId(meeting.id);
     setMeetingTopic(meeting.topic); // Подставляем тему
-    setSelectedMembers(meeting.members);
+    setSelectedMemberIds(meeting.member_ids);
     setMeetingTime(meeting.time.slice(0, 16));
     setMeetingDuration(meeting.duration != null ? String(meeting.duration) : "");
     setMeetingLink(meeting.link);
 
     // Сохраняем «до» для сравнения
     setOrigTopic(meeting.topic);
-    setOrigMembers(meeting.members);
+    setOrigMemberIds(meeting.member_ids);
     setOrigTime(meeting.time.slice(0, 16));
     setOrigDuration(meeting.duration != null ? String(meeting.duration) : "");
     setOrigLink(meeting.link);
@@ -329,12 +355,12 @@ export const FormMeetPage: React.FC = () => {
       setDeletingId(m.id);
 
       const payload = {
+        creator: username,
         topic: m.topic,
         members: m.members,
         time: m.time,
         duration: m.duration,
         link: m.link,
-        creator: username,
       };
 
       const resp = await fetch(`${API_URL}/delete_meeting?meeting_id=${m.id}`, {
@@ -353,7 +379,9 @@ export const FormMeetPage: React.FC = () => {
         window.Telegram.WebApp.showAlert('Встреча успешно удалена');
       }
 
-      await fetchMeetings();
+      if (managerId) {
+        await fetchMeetings(managerId);
+      }
     } catch (e: any) {
       if (window?.Telegram?.WebApp?.showAlert) {
         window.Telegram.WebApp.showAlert(e?.message ?? 'Ошибка удаления');
@@ -361,21 +389,43 @@ export const FormMeetPage: React.FC = () => {
     } finally {
       setDeletingId(null);
     }
-  }, [username, fetchMeetings]);
+  }, [managerId, fetchMeetings, username]);
 
   const resetForm = () => {
     setEditId(null);
     setMeetingTopic("");
     setSearchTerm("");
-    setSelectedMembers([]);
+    setSelectedMemberIds([]);
     setMeetingTime("");
     setMeetingDuration("");
     setMeetingLink("");
   };
 
+  const handleGoToCalendar = () => {
+    window.location.hash = "#/calendar";
+  };
+
   return (
     <div className="form-page">
       <div className="form-container">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '-15px 0 -5px 0' }}>
+          <button
+            type="button"
+            onClick={handleGoToCalendar}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#007AFF',
+              fontSize: '14px',
+              cursor: 'pointer',
+              padding: 0,
+              fontWeight: 500,
+            }}
+          >
+            Календарь
+          </button>
+          <div style={{ width: '70px' }}></div>
+        </div>
         <h2>{editId ? "Редактировать встречу" : "Назначить встречу"}</h2>
 
         <form onSubmit={handleSubmit}>
@@ -403,9 +453,9 @@ export const FormMeetPage: React.FC = () => {
               {filteredSubordinates.length > 0 ? (
                 filteredSubordinates.map((o) => (
                   <div
-                    key={o.value}
-                    className={`option ${selectedMembers.includes(o.value) ? "selected" : ""}`}
-                    onClick={() => handleSelectMember(o.value)}
+                    key={o.id}
+                    className={`option ${selectedMemberIds.includes(o.id) ? "selected" : ""}`}
+                    onClick={() => handleSelectMember(o.id)}
                   >
                     {o.label}
                   </div>
@@ -416,23 +466,26 @@ export const FormMeetPage: React.FC = () => {
             </div>
           )}
 
-          {selectedMembers.length > 0 && (
+          {selectedMemberIds.length > 0 && (
             <div className="selected-list">
               <h4>Выбранные участники:</h4>
               <ul>
-                {selectedMembers.map((m) => (
-                  <li key={m}>
-                    {m}{" "}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSelectedMembers((prev) => prev.filter((x) => x !== m))
-                      }
-                    >
-                      ✖
-                    </button>
-                  </li>
-                ))}
+                {selectedMemberIds.map((id) => {
+                  const sub = subordinateOptions.find(o => o.id === id);
+                  return (
+                    <li key={id}>
+                      {sub ? sub.label : `ID: ${id}`}{" "}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedMemberIds((prev) => prev.filter((x) => x !== id))
+                        }
+                      >
+                        ✖
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
@@ -477,18 +530,18 @@ export const FormMeetPage: React.FC = () => {
             type="submit"
             className="submit-btn"
             disabled={
-              !meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
+              !meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
             }
             aria-disabled={
-              !meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
+              !meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
             }
             data-disabled={
-              (!meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged))
+              (!meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged))
                 ? "true"
                 : undefined
             }
             title={
-              (!meetingTopic.trim() || selectedMembers.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim())
+              (!meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim())
                 ? "Заполните все поля"
                 : "Нет изменений"
             }>
