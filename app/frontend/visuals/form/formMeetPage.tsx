@@ -2,10 +2,16 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import "../styles/formPage.css";
 const API_URL = import.meta.env.VITE_API_URL as string;
 
+type Participant = {
+  username: string;
+  fullname: string;
+  id?: number;
+};
+
 type Meeting = {
   id: number;
   topic: string;
-  members: string[];
+  participants: Participant[];
   member_ids: number[];
   time: string;
   duration: number | null;  // продолжительность в минутах
@@ -181,10 +187,11 @@ export const FormMeetPage: React.FC = () => {
       body: JSON.stringify(payload),
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok || data?.ok !== true) {
+    if (!r.ok) {
       const text = data?.detail || `HTTP ${r.status}`;
       throw new Error(text);
     }
+    // Возвращаем данные (могут содержать ok: false с reasons)
     return data;
   }
 
@@ -198,11 +205,15 @@ export const FormMeetPage: React.FC = () => {
     return local + ":00";
   };
 
-  // Получить usernames для выбранных member_ids
-  const getSelectedUsernames = () => {
+  // Получить participants для выбранных member_ids
+  const getSelectedParticipants = (): Participant[] => {
     return selectedMemberIds
-      .map(id => subordinateOptions.find(o => o.id === id)?.value)
-      .filter((u): u is string => !!u);
+      .map(id => {
+        const sub = subordinateOptions.find(o => o.id === id);
+        if (!sub) return null;
+        return { username: sub.value, fullname: sub.raw.fullname, id };
+      })
+      .filter((p): p is Participant => !!p);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -261,13 +272,32 @@ export const FormMeetPage: React.FC = () => {
 
         const serverRes = await putCreateMeeting(payload);
 
+        // Проверяем, не вернул ли сервер ошибку валидации
+        if (serverRes && serverRes.ok === false && Array.isArray(serverRes.reasons)) {
+          const reasonMessages: string[] = [];
+          if (serverRes.reasons.includes("schedule")) {
+            reasonMessages.push("Встреча не укладывается в рабочее расписание участников");
+          }
+          if (serverRes.reasons.includes("conflict")) {
+            reasonMessages.push("Встреча пересекается с другими встречами участников");
+          }
+          const message = reasonMessages.join("\n\n");
+          
+          if (window?.Telegram?.WebApp?.showAlert) {
+            window.Telegram.WebApp.showAlert(message);
+          } else {
+            alert(message);
+          }
+          return;
+        }
+
         // возьмём id с сервера, если он вернулся, иначе сгенерируем локально как раньше
         const newId = (serverRes && serverRes.id) ? Number(serverRes.id) : Date.now();
 
         const newMeeting: Meeting = {
           id: newId,
           topic: payload.topic,
-          members: getSelectedUsernames(),
+          participants: getSelectedParticipants(),
           member_ids: payload.member_ids,
           time: payload.time,
           duration: payload.duration,
@@ -275,11 +305,20 @@ export const FormMeetPage: React.FC = () => {
         };
 
         setMeetings((prev) => [...prev, newMeeting]);
-        alert('Встреча создана');
+        if (window?.Telegram?.WebApp?.showAlert) {
+          window.Telegram.WebApp.showAlert('Встреча создана');
+        } else {
+          alert('Встреча создана');
+        }
         resetForm();
         return;
       } catch (err: any) {
-        alert(`Ошибка сохранения: ${err?.message || err}`);
+        const errMsg = `Ошибка сохранения: ${err?.message || err}`;
+        if (window?.Telegram?.WebApp?.showAlert) {
+          window.Telegram.WebApp.showAlert(errMsg);
+        } else {
+          alert(errMsg);
+        }
         return;
       }
     }
@@ -306,7 +345,29 @@ export const FormMeetPage: React.FC = () => {
     }
 
     try {
-      await putUpdateMeeting(payload);
+      const updateRes = await putUpdateMeeting(payload);
+      
+      // Проверяем, не вернул ли сервер ошибку валидации
+      if (updateRes && updateRes.ok === false && Array.isArray(updateRes.reasons)) {
+        const reasonMessages: string[] = [];
+        if (updateRes.reasons.includes("schedule")) {
+          reasonMessages.push("Встреча не укладывается в рабочее расписание участников");
+        }
+        if (updateRes.reasons.includes("conflict")) {
+          reasonMessages.push("Встреча пересекается с другими встречами участников");
+        }
+        const message = reasonMessages.length > 0 
+          ? reasonMessages.join("\n\n") 
+          : "Ошибка на стороне сервера";
+        
+        if (window?.Telegram?.WebApp?.showAlert) {
+          window.Telegram.WebApp.showAlert(message);
+        } else {
+          alert(message);
+        }
+        return;
+      }
+      
       // Локально обновляем
       setMeetings(prev =>
         prev.map(m =>
@@ -317,9 +378,9 @@ export const FormMeetPage: React.FC = () => {
               link: payload.link ?? m.link,
               time: payload.time ?? m.time,
               duration: payload.duration !== undefined ? payload.duration : m.duration,
-              members: Array.isArray(payload.added_member_ids) || Array.isArray(payload.removed_member_ids)
-                ? getSelectedUsernames()
-                : m.members,
+              participants: Array.isArray(payload.added_member_ids) || Array.isArray(payload.removed_member_ids)
+                ? getSelectedParticipants()
+                : m.participants,
               member_ids: Array.isArray(payload.added_member_ids) || Array.isArray(payload.removed_member_ids)
                 ? selectedMemberIds
                 : m.member_ids,
@@ -327,10 +388,19 @@ export const FormMeetPage: React.FC = () => {
             : m
         )
       );
-      window?.Telegram?.WebApp?.showAlert?.("Изменения сохранены");
+      if (window?.Telegram?.WebApp?.showAlert) {
+        window.Telegram.WebApp.showAlert("Изменения сохранены");
+      } else {
+        alert("Изменения сохранены");
+      }
       resetForm();
     } catch (err: any) {
-      window?.Telegram?.WebApp?.showAlert?.(err?.message || "Ошибка сохранения");
+      const errMsg = err?.message || "Ошибка сохранения";
+      if (window?.Telegram?.WebApp?.showAlert) {
+        window.Telegram.WebApp.showAlert(errMsg);
+      } else {
+        alert(errMsg);
+      }
     }
   };
 
@@ -357,7 +427,7 @@ export const FormMeetPage: React.FC = () => {
       const payload = {
         creator: username,
         topic: m.topic,
-        members: m.members,
+        participants: m.participants,
         time: m.time,
         duration: m.duration,
         link: m.link,
@@ -570,7 +640,7 @@ export const FormMeetPage: React.FC = () => {
                 <strong>Тема:</strong> {m.topic}
               </p>
               <p>
-                <strong>Участники:</strong> {m.members.join(", ")}
+                <strong>Участники:</strong> {m.participants.map(p => p.fullname || p.username).join(", ")}
               </p>
               <p>
                 <strong>Время:</strong> {m.time.slice(0, 16).replace('T', ' ')}

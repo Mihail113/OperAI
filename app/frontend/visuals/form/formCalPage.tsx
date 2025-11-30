@@ -5,31 +5,46 @@ const API_URL = import.meta.env.VITE_API_URL as string;
 
 // --- Типы ---
 interface Employee {
-  id: string;
-  name: string;
-  role: string;
+  id: number;
+  username: string;
+  fullname: string;
 }
 
-interface Event {
-  id: string;
-  title: string;
-  description?: string;
-  time: string; // HH:MM string
-  duration: number; // в минутах
-  type: 'personal' | 'meeting' | 'work';
+interface ScheduleInterval {
+  start: string;
+  end: string;
+}
+
+interface ScheduleDay {
+  day: number; // 0-6 (0=Пн, 6=Вс в API)
+  intervals: ScheduleInterval[];
+}
+
+interface Participant {
+  username: string;
+  fullname: string;
 }
 
 interface Meeting {
-  id: string;
+  id: number;
   topic: string;
+  participants: Participant[];
+  member_ids?: number[]; // опционально
   time: string; // ISO string
-  duration: number;
-  members: string[];
+  duration: number | null;
+  link: string;
+  creator_name?: string; // полное имя создателя
 }
 
-const CURRENT_USER_NAME = "Антон"; 
 
 type ModalViewMode = 'timeline' | 'select-type' | 'create-task';
+
+// Хелпер для форматирования времени окончания
+const getEndTime = (startTime: string, durationMinutes: number): string => {
+  const start = new Date(startTime);
+  const end = new Date(start.getTime() + durationMinutes * 60000);
+  return end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
 
 export const FormCalPage: React.FC = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -38,10 +53,22 @@ export const FormCalPage: React.FC = () => {
   const [modalMode, setModalMode] = useState<ModalViewMode>('timeline');
 
   // --- Данные ---
-  const [personalEvents, setPersonalEvents] = useState<Record<string, Event[]>>({});
   const [meetings, setMeetings] = useState<Meeting[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [schedule, setSchedule] = useState<ScheduleDay[]>([]);
+
+  const [myUserId, setMyUserId] = useState<number | null>(null); // получение ID начальника
+  const [myUsername, setMyUsername] = useState<string | null>(null);
+  const [subordinates, setSubordinates] = useState<Employee[]>([]);
   
+  const [isInitLoading, setIsInitLoading] = useState(true); // Первая загрузка (ID)
+  const [isEventsLoading, setIsEventsLoading] = useState(false); // Загрузка встреч при смене месяца или сотрудника
+
+  // --- Кэш ---
+  // Кэш расписаний по userId
+  const scheduleCache = useRef<Map<number, ScheduleDay[]>>(new Map());
+  // Кэш встреч по ключу "userId-year-month"
+  const meetingsCache = useRef<Map<string, Meeting[]>>(new Map());
+
   // --- Поиск ---
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
@@ -50,12 +77,18 @@ export const FormCalPage: React.FC = () => {
   // --- Форма ---
   const [newTask, setNewTask] = useState({ title: "", description: "", time: "09:00", duration: 60 });
 
+  // --- Попап встречи ---
+  const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
+
   // --- Линия времени (Current Time Line) ---
   const [nowMinutes, setNowMinutes] = useState(0);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const scrollRef = useRef<HTMLDivElement>(null);
+  
+  // Хелпер для создания ключа кэша встреч
+  const getMeetingsCacheKey = (userId: number, y: number, m: number) => `${userId}-${y}-${m}`;
 
   // Обновляем текущее время для красной линии
   useEffect(() => {
@@ -76,6 +109,133 @@ export const FormCalPage: React.FC = () => {
     }
   }, [showModal, modalMode]);
 
+
+// 1. Инициализация: Получаем Username -> ID, список подчиненных и данные начальника
+  useEffect(() => {
+    const controller = new AbortController();
+    
+    const init = async () => {
+      const tg = (window as any).Telegram?.WebApp;
+      const user = tg?.initDataUnsafe?.user;
+      const username = user?.username ? `@${user.username}` : null;
+      // const username = "@riftinink"; // Для тестов локально
+
+      if (!username) {
+        setIsInitLoading(false);
+        return;
+      }
+      setMyUsername(username);
+
+      try {
+        // 1. Получаем подчиненных и свой ID
+        const res = await fetch(`${API_URL}/get_subordinates?username=${username}`, { signal: controller.signal });
+        if (!res.ok) throw new Error("Failed to load profile");
+        const data = await res.json();
+
+        const managerId = data.manager_id;
+        setMyUserId(managerId);
+        setSubordinates(data.subordinates || []);
+
+        if (!managerId) return;
+
+        // 2. Параллельно загружаем расписание и встречи для начальника
+        const currentYear = new Date().getFullYear();
+        const currentMonth = new Date().getMonth();
+        const meetingsCacheKey = getMeetingsCacheKey(managerId, currentYear, currentMonth + 1);
+
+        const [scheduleData, meetingsData] = await Promise.all([
+          fetch(`${API_URL}/get_schedule?id=${managerId}`, { signal: controller.signal }).then(r => r.json()),
+          fetch(`${API_URL}/get_month_meetings?id=${managerId}&year=${currentYear}&month=${currentMonth + 1}`, { signal: controller.signal }).then(r => r.json())
+        ]);
+
+        // Сохраняем в кэш
+        scheduleCache.current.set(managerId, scheduleData.schedule || []);
+        meetingsCache.current.set(meetingsCacheKey, meetingsData.meetings || []);
+
+        // Устанавливаем в state
+        setSchedule(scheduleData.schedule || []);
+        setMeetings(meetingsData.meetings || []);
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') {
+          console.error(e);
+        }
+      } finally {
+        setIsInitLoading(false);
+      }
+    };
+
+    init();
+    
+    return () => controller.abort();
+  }, []);
+
+  // 2. Загрузка данных при смене месяца или сотрудника (с кэшированием)
+  useEffect(() => {
+    // Если еще не знаем свой ID - ждем (инициализация еще не завершена)
+    if (!myUserId) return;
+
+    const targetId = selectedEmployee ? selectedEmployee.id : myUserId;
+    const meetingsCacheKey = getMeetingsCacheKey(targetId, year, month + 1);
+
+    // Проверяем кэш
+    const cachedSchedule = scheduleCache.current.get(targetId);
+    const cachedMeetings = meetingsCache.current.get(meetingsCacheKey);
+
+    // Если всё есть в кэше - просто устанавливаем из кэша
+    if (cachedSchedule && cachedMeetings) {
+      setSchedule(cachedSchedule);
+      setMeetings(cachedMeetings);
+      return;
+    }
+
+    // Иначе загружаем недостающее
+    const fetchMissingData = async () => {
+      setIsEventsLoading(true);
+
+      try {
+        const promises: Promise<void>[] = [];
+
+        // Расписание - загружаем только если нет в кэше
+        if (!cachedSchedule) {
+          promises.push(
+            fetch(`${API_URL}/get_schedule?id=${targetId}`)
+              .then(r => r.json())
+              .then(data => {
+                const scheduleData = data.schedule || [];
+                scheduleCache.current.set(targetId, scheduleData);
+                setSchedule(scheduleData);
+              })
+          );
+        } else {
+          setSchedule(cachedSchedule);
+        }
+
+        // Встречи - загружаем только если нет в кэше
+        if (!cachedMeetings) {
+          promises.push(
+            fetch(`${API_URL}/get_month_meetings?id=${targetId}&year=${year}&month=${month + 1}`)
+              .then(r => r.json())
+              .then(data => {
+                const meetingsData = data.meetings || [];
+                meetingsCache.current.set(meetingsCacheKey, meetingsData);
+                setMeetings(meetingsData);
+              })
+          );
+        } else {
+          setMeetings(cachedMeetings);
+        }
+
+        await Promise.all(promises);
+      } catch (e) {
+        console.error("Error loading events", e);
+      } finally {
+        setIsEventsLoading(false);
+      }
+    };
+
+    fetchMissingData();
+  }, [myUserId, year, month, selectedEmployee]); // Перезапуск при смене даты или сотрудника
+
   // --- Хелперы ---
   const getFirstDayOfMonth = (y: number, m: number) => {
     const day = new Date(y, m, 1).getDay();
@@ -95,61 +255,39 @@ export const FormCalPage: React.FC = () => {
     return h * 60 + m;
   };
 
-  // --- Загрузка данных ---
-  useEffect(() => {
-    // Заглушка личных
-    fetch(`${API_URL}/events?year=${year}&month=${month + 1}`)  //#MARK: Убрать вот эту ссылку, не нужно получать данные сервера, просто берем текущую дату / время
-      .then(res => res.json())
-      .then(data => setPersonalEvents(data))
-      .catch(() => {});
+  // Конвертация JS дня недели в API формат (API: 0=Пн, 6=Вс; JS: 0=Вс, 1=Пн)
+  const jsToApiDay = (jsDay: number) => jsDay === 0 ? 6 : jsDay - 1;
 
-    // Заглушка встреч
-    setMeetings([
-      { id: 'm1', topic: 'Дейли', time: '2025-11-26T10:00:00', duration: 30, members: ['Антон', 'Иван'] },
-      { id: 'm2', topic: 'Ревью кода', time: '2025-11-26T14:00:00', duration: 60, members: ['Антон'] },
-    ]);
+  // Проверка: есть ли рабочее расписание в этот день
+  const hasScheduleForDate = (date: Date): boolean => {
+    const apiDay = jsToApiDay(date.getDay());
+    const daySchedule = schedule.find(s => s.day === apiDay);
+    return !!(daySchedule && daySchedule.intervals.length > 0);
+  };
 
-    // Заглушка сотрудников
-    setEmployees([
-      { id: 'e1', name: 'Иван Иванов', role: 'Backend' },
-      { id: 'e2', name: 'Мария Петрова', role: 'Designer' },
-      { id: 'e3', name: 'Антон', role: 'iOS Dev' },
-    ]);
-  }, [year, month]);
-
-  const getEventsForDay = (date: Date) => {
+  // Проверка: есть ли встречи в этот день
+  const hasMeetingsForDate = (date: Date): boolean => {
     const dateKey = formatDateKey(date);
-    const dayEvents: Event[] = [];
-
-    // Личные
-    if (!selectedEmployee || selectedEmployee.name === CURRENT_USER_NAME) {
-      if (personalEvents[dateKey]) dayEvents.push(...personalEvents[dateKey]);
-    }
-
-    // Встречи
-    const targetName = selectedEmployee ? selectedEmployee.name : CURRENT_USER_NAME;
-    const daysMeetings = meetings.filter(m => {
-      const mDate = new Date(m.time);
-      return formatDateKey(mDate) === dateKey && m.members.includes(targetName);
+    return meetings.some(m => {
+      if (!m.time) return false;
+      return formatDateKey(new Date(m.time)) === dateKey;
     });
+  };
 
-    daysMeetings.forEach(m => {
-      dayEvents.push({
-        id: m.id,
-        title: `📅 ${m.topic}`,
-        description: "Созвон",
-        time: new Date(m.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}),
-        duration: m.duration,
-        type: 'meeting'
-      });
+  // Получение рабочих интервалов для дня (для timeline)
+  const getWorkIntervalsForDate = (date: Date): ScheduleInterval[] => {
+    const apiDay = jsToApiDay(date.getDay());
+    const daySchedule = schedule.find(s => s.day === apiDay);
+    return daySchedule?.intervals || [];
+  };
+
+  // Получение встреч для дня (для timeline)
+  const getMeetingsForDate = (date: Date): Meeting[] => {
+    const dateKey = formatDateKey(date);
+    return meetings.filter(m => {
+      if (!m.time) return false;
+      return formatDateKey(new Date(m.time)) === dateKey;
     });
-
-    // Смена (пример)
-    if (selectedEmployee?.name === 'Иван Иванов' && date.getDate() % 2 === 0) {
-       dayEvents.push({ id: `w-${dateKey}`, title: 'Смена', description: 'Офис', time: '09:00', duration: 540, type: 'work' });
-    }
-
-    return dayEvents;
   };
 
   // --- Actions ---
@@ -160,17 +298,10 @@ export const FormCalPage: React.FC = () => {
   };
 
   const handleSaveTask = () => {
+    // TODO: Реализовать API для сохранения личных задач
+    // Пока функция отключена - нет бэкенда для личных задач
     if (!selectedDate || !newTask.title) return;
-    const dateKey = formatDateKey(selectedDate);
-    const event: Event = {
-      id: Date.now().toString(),
-      title: newTask.title,
-      description: newTask.description,
-      time: newTask.time,
-      duration: Number(newTask.duration),
-      type: 'personal'
-    };
-    setPersonalEvents(prev => ({ ...prev, [dateKey]: [...(prev[dateKey] || []), event] }));
+    console.log('Создание задачи пока не поддерживается:', newTask);
     setNewTask({ title: "", description: "", time: "09:00", duration: 60 });
     setModalMode('timeline');
   };
@@ -182,8 +313,9 @@ export const FormCalPage: React.FC = () => {
   // --- Рендер Timeline ---
   const renderTimeline = () => {
     if (!selectedDate) return null;
-    const events = getEventsForDay(selectedDate);
-    const isMyCalendar = !selectedEmployee || selectedEmployee.name === CURRENT_USER_NAME;
+    const workIntervals = getWorkIntervalsForDate(selectedDate);
+    const dayMeetings = getMeetingsForDate(selectedDate);
+    const isMyCalendar = !selectedEmployee;
     const isToday = new Date().toDateString() === selectedDate.toDateString();
 
     // Константа высоты часа в пикселях
@@ -217,11 +349,36 @@ export const FormCalPage: React.FC = () => {
             </div>
           ))}
 
+          {/* Рабочие часы - серый фон (z-index: 1, под встречами) */}
+          {workIntervals.map((interval, idx) => {
+            const startMinutes = timeToMinutes(interval.start);
+            const endMinutes = timeToMinutes(interval.end);
+            const top = (startMinutes / 60) * HOUR_HEIGHT + 10;
+            const height = ((endMinutes - startMinutes) / 60) * HOUR_HEIGHT;
+
+            return (
+              <div 
+                key={`work-${idx}`}
+                style={{
+                  position: 'absolute',
+                  top: `${top}px`,
+                  left: '60px',
+                  right: '10px',
+                  height: `${height}px`,
+                  background: '#E0E0E0',
+                  borderRadius: '4px',
+                  zIndex: 1,
+                  opacity: 0.5
+                }}
+              />
+            );
+          })}
+
           {/* Красная линия текущего времени (только если сегодня) */}
           {isToday && (
             <div style={{
               position: 'absolute',
-              top: `${(nowMinutes / 60) * HOUR_HEIGHT + 10}px`, // +10 padding-top container
+              top: `${(nowMinutes / 60) * HOUR_HEIGHT + 10}px`,
               left: '50px',
               right: 0,
               height: '2px',
@@ -236,40 +393,55 @@ export const FormCalPage: React.FC = () => {
             </div>
           )}
 
-          {/* События */}
-          {events.map((ev) => {
-            const startMinutes = timeToMinutes(ev.time);
-            const top = (startMinutes / 60) * HOUR_HEIGHT + 10; // +10 offset
-            const height = (ev.duration / 60) * HOUR_HEIGHT;
-            
-            // Цвета
-            const bg = ev.type === 'meeting' ? '#FFF8E1' : ev.type === 'work' ? '#E0F7FA' : '#F1F8E9';
-            const border = ev.type === 'meeting' ? '#FF9F1C' : ev.type === 'work' ? '#00BCD4' : '#4CAF50';
-            const text = ev.type === 'meeting' ? '#E65100' : ev.type === 'work' ? '#006064' : '#1B5E20';
+          {/* Встречи - синие блоки (z-index: 2, над рабочими часами) */}
+          {dayMeetings.map((meeting) => {
+            if (!meeting.time) return null;
+            const meetingDate = new Date(meeting.time);
+            const startMinutes = meetingDate.getHours() * 60 + meetingDate.getMinutes();
+            const top = (startMinutes / 60) * HOUR_HEIGHT + 10;
+            const duration = meeting.duration || 60; // По умолчанию 60 минут
+            const height = (duration / 60) * HOUR_HEIGHT;
 
             return (
               <div 
-                key={ev.id}
+                key={`meeting-${meeting.id}`}
+                onClick={() => setSelectedMeeting(meeting)}
                 style={{
                   position: 'absolute',
                   top: `${top}px`,
-                  left: '60px', // отступ от времени
+                  left: '60px',
                   right: '10px',
-                  height: `${Math.max(height, 25)}px`, // минимум 25px чтобы текст влез
-                  background: bg,
-                  borderLeft: `4px solid ${border}`,
+                  height: `${height}px`,
+                  minHeight: '2px',
+                  background: '#E3F2FD',
+                  borderLeft: '4px solid #2196F3',
                   borderRadius: '4px',
                   padding: '4px 8px',
                   overflow: 'hidden',
                   fontSize: '12px',
                   zIndex: 2,
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                  cursor: 'pointer'
                 }}
               >
-                <div style={{fontWeight: '600', color: text}}>{ev.title}</div>
-                {height > 40 && (
-                  <div style={{color: text, opacity: 0.8, fontSize: '11px'}}>
-                    {ev.time} • {ev.duration} мин {ev.description ? `• ${ev.description}` : ''}
+                <div style={{
+                  fontWeight: '600', 
+                  color: '#1565C0', 
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis'
+                }}>
+                  {meeting.topic}
+                </div>
+                {height >= 36 && (
+                  <div style={{
+                    color: '#1976D2', 
+                    fontSize: '11px',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}>
+                    {meetingDate.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})} • {duration} мин
                   </div>
                 )}
               </div>
@@ -324,23 +496,54 @@ export const FormCalPage: React.FC = () => {
   // --- Основной UI ---
   const firstDayIndex = getFirstDayOfMonth(year, month);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const filteredEmployees = employees.filter(e => e.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  const filteredEmployees = subordinates.filter(e => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return e.fullname.toLowerCase().includes(q) || e.username.toLowerCase().includes(q);
+  });
 
   return (
     <div style={{ padding: '20px', maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-      <h2 style={{marginBottom: '20px', fontSize: '22px', fontWeight: '700'}}>{selectedEmployee ? selectedEmployee.name : "Мой календарь"}</h2>
+      <h2 style={{marginBottom: '20px', fontSize: '22px', fontWeight: '700'}}>{selectedEmployee ? selectedEmployee.fullname : "Мой календарь"}</h2>
       
       {/* Поиск */}
       <div style={{display: 'flex', gap: '10px', marginBottom: '20px', position: 'relative'}}>
-        <input type="text" placeholder="🔍 Сотрудник..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onFocus={() => setIsSearchFocused(true)} 
-          style={{flex: 1, padding: '10px', borderRadius: '10px', border: '1px solid #ddd', background: '#f5f5f5', outline: 'none'}} />
+        <div style={{flex: 1, position: 'relative'}}>
+          <span style={{position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '16px', pointerEvents: 'none', zIndex: 1}}>🔍</span>
+          <input 
+            type="text" 
+            placeholder="Сотрудник..." 
+            value={searchQuery} 
+            onChange={(e) => setSearchQuery(e.target.value)} 
+            onFocus={() => setIsSearchFocused(true)} 
+            style={{width: '100%', padding: '10px 32px 10px 36px', borderRadius: '10px', border: '1px solid #ddd', background: '#f5f5f5', outline: 'none', boxSizing: 'border-box'}} 
+          />
+          {searchQuery && (
+            <button 
+              onClick={() => {setSearchQuery(""); setIsSearchFocused(false);}}
+              style={{position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '16px', color: '#999', lineHeight: 1}}
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <button onClick={() => {setSelectedEmployee(null); setSearchQuery("")}} style={{background: selectedEmployee ? '#ddd' : '#40d0b0', color: selectedEmployee ? '#333' : '#fff', border: 'none', borderRadius: '10px', padding: '0 15px', fontWeight: '600'}}>Моё</button>
         
         {isSearchFocused && searchQuery && (
-          <div style={{position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', zIndex: 10, border: '1px solid #eee', borderRadius: '10px', maxHeight: '200px', overflow: 'auto', boxShadow: '0 4px 10px rgba(0,0,0,0.1)'}}>
-            {filteredEmployees.map(e => (
-              <div key={e.id} onClick={() => {setSelectedEmployee(e); setSearchQuery(e.name); setIsSearchFocused(false)}} style={{padding: '10px', borderBottom: '1px solid #eee'}}>{e.name}</div>
-            ))}
+          <div style={{position: 'absolute', top: '100%', left: 0, right: 70, background: 'white', zIndex: 10, border: '1px solid #eee', borderRadius: '10px', maxHeight: '200px', overflow: 'auto', boxShadow: '0 4px 10px rgba(0,0,0,0.1)'}}>
+            {filteredEmployees.length > 0 ? (
+              filteredEmployees.map(e => (
+                <div 
+                  key={e.id} 
+                  onClick={() => {setSelectedEmployee(e); setSearchQuery(`${e.username} — ${e.fullname}`); setIsSearchFocused(false)}} 
+                  style={{padding: '10px', borderBottom: '1px solid #eee', cursor: 'pointer'}}
+                >
+                  {e.username} — {e.fullname}
+                </div>
+              ))
+            ) : (
+              <p style={{padding: '10px', color: '#888', margin: 0}}>Совпадений нет</p>
+            )}
           </div>
         )}
       </div>
@@ -357,13 +560,16 @@ export const FormCalPage: React.FC = () => {
           {Array(firstDayIndex).fill(0).map((_,i) => <div key={`e-${i}`}/>)}
           {Array(daysInMonth).fill(0).map((_, i) => {
              const d = i + 1;
-             const isToday = new Date().toDateString() === new Date(year, month, d).toDateString();
-             const evs = getEventsForDay(new Date(year, month, d));
+             const dayDate = new Date(year, month, d);
+             const isToday = new Date().toDateString() === dayDate.toDateString();
+             const hasSchedule = hasScheduleForDate(dayDate);
+             const hasMeetings = hasMeetingsForDate(dayDate);
              return (
                <div key={d} onClick={() => openDay(d)} style={{aspectRatio: '1', borderRadius: '10px', background: isToday ? '#40d0b0' : '#f5f5f5', color: isToday?'#fff':'#333', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer'}}>
                  <span style={{fontWeight: '600'}}>{d}</span>
-                 <div style={{display: 'flex', gap: '2px', marginTop: '3px'}}>
-                   {evs.slice(0,3).map((_,idx) => <div key={idx} style={{width: '4px', height: '4px', borderRadius: '50%', background: isToday?'#fff':'#40d0b0'}}/>)}
+                 <div style={{display: 'flex', gap: '3px', marginTop: '3px'}}>
+                   {hasSchedule && <div style={{width: '5px', height: '5px', borderRadius: '50%', background: isToday ? 'rgba(255,255,255,0.7)' : '#9E9E9E'}}/>}
+                   {hasMeetings && <div style={{width: '5px', height: '5px', borderRadius: '50%', background: isToday ? '#fff' : '#2196F3'}}/>}
                  </div>
                </div>
              )
@@ -375,6 +581,155 @@ export const FormCalPage: React.FC = () => {
       {showModal && (
         <div style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: '#fff', zIndex: 9999, display: 'flex', flexDirection: 'column'}}>
           {modalMode === 'timeline' ? renderTimeline() : renderActionScreens()}
+        </div>
+      )}
+
+      {/* MEETING DETAIL POPUP */}
+      {selectedMeeting && (
+        <div 
+          style={{
+            position: 'fixed', 
+            top: 0, 
+            left: 0, 
+            right: 0, 
+            bottom: 0, 
+            background: 'rgba(0, 0, 0, 0.5)', 
+            zIndex: 10000, 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            padding: '60px 16px'
+          }}
+          onClick={() => setSelectedMeeting(null)}
+        >
+          <div 
+            style={{
+              background: '#fff',
+              borderRadius: '16px',
+              width: '100%',
+              maxWidth: '400px',
+              maxHeight: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid #f0f0f0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              flexShrink: 0
+            }}>
+              <button 
+                onClick={() => setSelectedMeeting(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '20px',
+                  color: '#999',
+                  cursor: 'pointer',
+                  padding: 0,
+                  lineHeight: 1
+                }}
+              >
+                ✕
+              </button>
+              <span style={{fontWeight: '600', fontSize: '17px', color: '#333'}}>Встреча</span>
+            </div>
+
+            {/* Scrollable Content */}
+            <div style={{
+              padding: '20px',
+              overflowY: 'auto',
+              flex: 1
+            }}>
+              {/* Topic */}
+              <div style={{marginBottom: '20px'}}>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Тема</div>
+                <div style={{fontSize: '16px', fontWeight: '600', color: '#333'}}>{selectedMeeting.topic}</div>
+              </div>
+
+              {/* Time */}
+              <div style={{marginBottom: '20px'}}>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Время</div>
+                <div style={{fontSize: '15px', color: '#333'}}>
+                  {selectedMeeting.time && (
+                    <>
+                      {new Date(selectedMeeting.time).toLocaleDateString('ru-RU', {
+                        day: 'numeric',
+                        month: 'long',
+                        year: 'numeric'
+                      })}
+                      <br />
+                      {new Date(selectedMeeting.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}
+                      {' — '}
+                      {getEndTime(selectedMeeting.time, selectedMeeting.duration || 60)}
+                      <span style={{color: '#888', marginLeft: '8px'}}>
+                        ({selectedMeeting.duration || 60} мин)
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Creator */}
+              <div style={{marginBottom: '20px'}}>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Создатель</div>
+                <div style={{fontSize: '15px', color: '#333'}}>{selectedMeeting.creator_name || '—'}</div>
+              </div>
+
+              {/* Participants */}
+              <div style={{marginBottom: '20px'}}>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
+                  Участники ({selectedMeeting.participants?.length || 0})
+                </div>
+                <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
+                  {(selectedMeeting.participants || []).map((participant, idx) => (
+                    <div 
+                      key={idx}
+                      style={{
+                        padding: '10px 12px',
+                        background: '#f5f5f5',
+                        borderRadius: '8px',
+                        fontSize: '14px',
+                        color: '#333'
+                      }}
+                    >
+                      {participant.fullname || participant.username}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Link */}
+              {selectedMeeting.link && (
+                <div>
+                  <div style={{fontSize: '12px', color: '#888', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Ссылка</div>
+                  <a 
+                    href={selectedMeeting.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      display: 'block',
+                      padding: '12px 16px',
+                      background: '#E3F2FD',
+                      borderRadius: '10px',
+                      color: '#1976D2',
+                      textDecoration: 'none',
+                      fontWeight: '500',
+                      textAlign: 'center'
+                    }}
+                  >
+                    Перейти к звонку
+                  </a>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
