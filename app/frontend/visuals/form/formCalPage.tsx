@@ -1,43 +1,35 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import "../styles/formPage.css";
+import {
+  ScheduleDay,
+  ScheduleInterval,
+  Meeting,
+  Subordinate,
+  getScheduleFromCache,
+  setScheduleToCache,
+  getMonthMeetingsFromCache,
+  setMonthMeetingsToCache,
+  getSubordinatesFromCache,
+  setSubordinatesToCache,
+  getFreeWindowsByKey,
+  setActiveFreeWindowsKey,
+  FreeWindowsData,
+  saveMeetingFormDraft,
+} from "../cache";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 
-// --- Типы ---
-interface Employee {
-  id: number;
-  username: string;
-  fullname: string;
-}
+// Employee is the same as Subordinate
+type Employee = Subordinate;
 
-interface ScheduleInterval {
+// Интерфейс для свободного окна с конкретной датой
+interface FreeWindowSlot {
+  date: Date;
   start: string;
   end: string;
+  startMinutes: number;
+  endMinutes: number;
 }
-
-interface ScheduleDay {
-  day: number; // 0-6 (0=Пн, 6=Вс в API)
-  intervals: ScheduleInterval[];
-}
-
-interface Participant {
-  username: string;
-  fullname: string;
-}
-
-interface Meeting {
-  id: number;
-  topic: string;
-  participants: Participant[];
-  member_ids?: number[]; // опционально
-  time: string; // ISO string
-  duration: number | null;
-  link: string;
-  creator_name?: string; // полное имя создателя
-}
-
-
-type ModalViewMode = 'timeline' | 'select-type' | 'create-task';
 
 // Хелпер для форматирования времени окончания
 const getEndTime = (startTime: string, durationMinutes: number): string => {
@@ -50,7 +42,6 @@ export const FormCalPage: React.FC = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [showModal, setShowModal] = useState(false);
-  const [modalMode, setModalMode] = useState<ModalViewMode>('timeline');
 
   // --- Данные ---
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -63,19 +54,10 @@ export const FormCalPage: React.FC = () => {
   const [isInitLoading, setIsInitLoading] = useState(true); // Первая загрузка (ID)
   const [isEventsLoading, setIsEventsLoading] = useState(false); // Загрузка встреч при смене месяца или сотрудника
 
-  // --- Кэш ---
-  // Кэш расписаний по userId
-  const scheduleCache = useRef<Map<number, ScheduleDay[]>>(new Map());
-  // Кэш встреч по ключу "userId-year-month"
-  const meetingsCache = useRef<Map<string, Meeting[]>>(new Map());
-
   // --- Поиск ---
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-
-  // --- Форма ---
-  const [newTask, setNewTask] = useState({ title: "", description: "", time: "09:00", duration: 60 });
 
   // --- Попап встречи ---
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
@@ -83,12 +65,15 @@ export const FormCalPage: React.FC = () => {
   // --- Линия времени (Current Time Line) ---
   const [nowMinutes, setNowMinutes] = useState(0);
 
+  // --- Режим свободных окон ---
+  const [freeWindowsMode, setFreeWindowsMode] = useState(false);
+  const [freeWindowsKey, setFreeWindowsKey] = useState<string | null>(null);
+  const [freeWindowsDuration, setFreeWindowsDuration] = useState<number>(40);
+  const [freeWindowsData, setFreeWindowsData] = useState<FreeWindowsData | null>(null);
+
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const scrollRef = useRef<HTMLDivElement>(null);
-  
-  // Хелпер для создания ключа кэша встреч
-  const getMeetingsCacheKey = (userId: number, y: number, m: number) => `${userId}-${y}-${m}`;
 
   // Обновляем текущее время для красной линии
   useEffect(() => {
@@ -103,11 +88,41 @@ export const FormCalPage: React.FC = () => {
 
   // Скролл к 9:00 при открытии
   useEffect(() => {
-    if (showModal && modalMode === 'timeline' && scrollRef.current) {
+    if (showModal && scrollRef.current) {
       // 9 * 60px = 540px
       scrollRef.current.scrollTop = 500;
     }
-  }, [showModal, modalMode]);
+  }, [showModal]);
+
+  // Проверка режима свободных окон из URL
+  useEffect(() => {
+    const checkFreeWindowsMode = () => {
+      const hash = window.location.hash;
+      if (hash.includes("mode=freeWindows")) {
+        const params = new URLSearchParams(hash.split("?")[1] || "");
+        const key = params.get("key");
+        const duration = params.get("duration");
+        
+        if (key) {
+          const data = getFreeWindowsByKey(key);
+          if (data) {
+            setFreeWindowsMode(true);
+            setFreeWindowsKey(key);
+            setFreeWindowsDuration(duration ? parseInt(duration, 10) : 40);
+            setFreeWindowsData(data);
+          }
+        }
+      } else {
+        setFreeWindowsMode(false);
+        setFreeWindowsKey(null);
+        setFreeWindowsData(null);
+      }
+    };
+    
+    checkFreeWindowsMode();
+    window.addEventListener("hashchange", checkFreeWindowsMode);
+    return () => window.removeEventListener("hashchange", checkFreeWindowsMode);
+  }, []);
 
 
 // 1. Инициализация: Получаем Username -> ID, список подчиненных и данные начальника
@@ -127,34 +142,82 @@ export const FormCalPage: React.FC = () => {
       setMyUsername(username);
 
       try {
-        // 1. Получаем подчиненных и свой ID
-        const res = await fetch(`${API_URL}/get_subordinates?username=${username}`, { signal: controller.signal });
-        if (!res.ok) throw new Error("Failed to load profile");
-        const data = await res.json();
+        // 1. Проверяем кэш подчиненных
+        const cachedSubordinates = getSubordinatesFromCache(username);
+        let managerId: number | null = null;
+        let subordinatesList: Employee[] = [];
 
-        const managerId = data.manager_id;
+        if (cachedSubordinates) {
+          // Используем данные из кэша
+          managerId = cachedSubordinates.managerId;
+          subordinatesList = cachedSubordinates.subordinates;
+        } else {
+          // Загружаем с сервера
+          const res = await fetch(`${API_URL}/get_subordinates?username=${username}`, { signal: controller.signal });
+          if (!res.ok) throw new Error("Failed to load profile");
+          const data = await res.json();
+
+          managerId = data.manager_id;
+          subordinatesList = data.subordinates || [];
+
+          // Сохраняем в кэш
+          if (managerId) {
+            setSubordinatesToCache(username, managerId, subordinatesList);
+          }
+        }
+
         setMyUserId(managerId);
-        setSubordinates(data.subordinates || []);
+        setSubordinates(subordinatesList);
 
         if (!managerId) return;
 
         // 2. Параллельно загружаем расписание и встречи для начальника
         const currentYear = new Date().getFullYear();
         const currentMonth = new Date().getMonth();
-        const meetingsCacheKey = getMeetingsCacheKey(managerId, currentYear, currentMonth + 1);
 
-        const [scheduleData, meetingsData] = await Promise.all([
-          fetch(`${API_URL}/get_schedule?id=${managerId}`, { signal: controller.signal }).then(r => r.json()),
-          fetch(`${API_URL}/get_month_meetings?id=${managerId}&year=${currentYear}&month=${currentMonth + 1}`, { signal: controller.signal }).then(r => r.json())
-        ]);
+        // Проверяем кэш
+        const cachedSchedule = getScheduleFromCache(managerId);
+        const cachedMeetings = getMonthMeetingsFromCache(managerId, currentYear, currentMonth + 1);
 
-        // Сохраняем в кэш
-        scheduleCache.current.set(managerId, scheduleData.schedule || []);
-        meetingsCache.current.set(meetingsCacheKey, meetingsData.meetings || []);
+        if (cachedSchedule && cachedMeetings) {
+          // Данные уже есть в кэше
+          setSchedule(cachedSchedule);
+          setMeetings(cachedMeetings);
+          return;
+        }
+
+        // Загружаем только недостающие данные
+        const promises: Promise<void>[] = [];
+        let scheduleResult: ScheduleDay[] = cachedSchedule || [];
+        let meetingsResult: Meeting[] = cachedMeetings || [];
+
+        if (!cachedSchedule) {
+          promises.push(
+            fetch(`${API_URL}/get_schedule?id=${managerId}`, { signal: controller.signal })
+              .then(r => r.json())
+              .then(data => {
+                scheduleResult = data.schedule || [];
+                setScheduleToCache(managerId, scheduleResult);
+              })
+          );
+        }
+
+        if (!cachedMeetings) {
+          promises.push(
+            fetch(`${API_URL}/get_month_meetings?id=${managerId}&year=${currentYear}&month=${currentMonth + 1}`, { signal: controller.signal })
+              .then(r => r.json())
+              .then(data => {
+                meetingsResult = data.meetings || [];
+                setMonthMeetingsToCache(managerId, currentYear, currentMonth + 1, meetingsResult);
+              })
+          );
+        }
+
+        await Promise.all(promises);
 
         // Устанавливаем в state
-        setSchedule(scheduleData.schedule || []);
-        setMeetings(meetingsData.meetings || []);
+        setSchedule(scheduleResult);
+        setMeetings(meetingsResult);
       } catch (e) {
         if ((e as Error).name !== 'AbortError') {
           console.error(e);
@@ -175,11 +238,10 @@ export const FormCalPage: React.FC = () => {
     if (!myUserId) return;
 
     const targetId = selectedEmployee ? selectedEmployee.id : myUserId;
-    const meetingsCacheKey = getMeetingsCacheKey(targetId, year, month + 1);
 
-    // Проверяем кэш
-    const cachedSchedule = scheduleCache.current.get(targetId);
-    const cachedMeetings = meetingsCache.current.get(meetingsCacheKey);
+    // Проверяем кэш (используем shared cache)
+    const cachedSchedule = getScheduleFromCache(targetId);
+    const cachedMeetings = getMonthMeetingsFromCache(targetId, year, month + 1);
 
     // Если всё есть в кэше - просто устанавливаем из кэша
     if (cachedSchedule && cachedMeetings) {
@@ -202,7 +264,7 @@ export const FormCalPage: React.FC = () => {
               .then(r => r.json())
               .then(data => {
                 const scheduleData = data.schedule || [];
-                scheduleCache.current.set(targetId, scheduleData);
+                setScheduleToCache(targetId, scheduleData);
                 setSchedule(scheduleData);
               })
           );
@@ -217,7 +279,7 @@ export const FormCalPage: React.FC = () => {
               .then(r => r.json())
               .then(data => {
                 const meetingsData = data.meetings || [];
-                meetingsCache.current.set(meetingsCacheKey, meetingsData);
+                setMonthMeetingsToCache(targetId, year, month + 1, meetingsData);
                 setMeetings(meetingsData);
               })
           );
@@ -290,36 +352,285 @@ export const FormCalPage: React.FC = () => {
     });
   };
 
+  // --- Хелперы для режима свободных окон ---
+  
+  // Получение всех встреч участников для конкретной даты из кэша окон
+  const getFreeWindowsMeetingsForDate = (date: Date): Meeting[] => {
+    if (!freeWindowsData) return [];
+    const dateKey = formatDateKey(date);
+    const allMeetings: Meeting[] = [];
+    const excludeId = freeWindowsData.excludeMeetingId;
+    
+    for (const meetings of Object.values(freeWindowsData.meetings)) {
+      for (const m of meetings) {
+        // Пропускаем редактируемую встречу — её старое время не занято
+        // Используем == для сравнения, чтобы обойти проблему с типами (число vs строка)
+        if (excludeId != null && m.id != null && String(m.id) === String(excludeId)) continue;
+        
+        if (m.time && formatDateKey(new Date(m.time)) === dateKey) {
+          // Проверка на дубликаты
+          if (!allMeetings.some(existing => existing.id === m.id)) {
+            allMeetings.push(m);
+          }
+        }
+      }
+    }
+    return allMeetings;
+  };
+
+  // Получение пересечённого расписания для дня недели из кэша окон
+  const getFreeWindowsScheduleForDate = (date: Date): ScheduleInterval[] => {
+    if (!freeWindowsData) return [];
+    const apiDay = jsToApiDay(date.getDay());
+    const daySchedule = freeWindowsData.windows.find(s => s.day === apiDay);
+    return daySchedule?.intervals || [];
+  };
+
+  // Вычисление свободных окон для конкретной даты
+  const computeFreeWindowsForDate = (date: Date, minDuration: number): FreeWindowSlot[] => {
+    const scheduleIntervals = getFreeWindowsScheduleForDate(date);
+    const dayMeetings = getFreeWindowsMeetingsForDate(date);
+    
+    if (scheduleIntervals.length === 0) return [];
+
+    // Собираем занятые интервалы из встреч
+    const busySlots: { start: number; end: number }[] = dayMeetings.map(m => {
+      const meetingDate = new Date(m.time);
+      const startMinutes = meetingDate.getHours() * 60 + meetingDate.getMinutes();
+      const duration = m.duration || 40;
+      return { start: startMinutes, end: startMinutes + duration };
+    }).sort((a, b) => a.start - b.start);
+
+    const freeSlots: FreeWindowSlot[] = [];
+
+    for (const interval of scheduleIntervals) {
+      const [startH, startM] = interval.start.split(":").map(Number);
+      const [endH, endM] = interval.end.split(":").map(Number);
+      const intervalStart = startH * 60 + startM;
+      const intervalEnd = endH * 60 + endM;
+
+      let currentStart = intervalStart;
+
+      for (const busy of busySlots) {
+        if (busy.end <= currentStart || busy.start >= intervalEnd) continue;
+
+        if (busy.start > currentStart) {
+          const windowDuration = busy.start - currentStart;
+          if (windowDuration >= minDuration) {
+            freeSlots.push({
+              date,
+              start: `${Math.floor(currentStart / 60).toString().padStart(2, "0")}:${(currentStart % 60).toString().padStart(2, "0")}`,
+              end: `${Math.floor(busy.start / 60).toString().padStart(2, "0")}:${(busy.start % 60).toString().padStart(2, "0")}`,
+              startMinutes: currentStart,
+              endMinutes: busy.start,
+            });
+          }
+        }
+        currentStart = Math.max(currentStart, busy.end);
+      }
+
+      if (currentStart < intervalEnd) {
+        const windowDuration = intervalEnd - currentStart;
+        if (windowDuration >= minDuration) {
+          freeSlots.push({
+            date,
+            start: `${Math.floor(currentStart / 60).toString().padStart(2, "0")}:${(currentStart % 60).toString().padStart(2, "0")}`,
+            end: `${Math.floor(intervalEnd / 60).toString().padStart(2, "0")}:${(intervalEnd % 60).toString().padStart(2, "0")}`,
+            startMinutes: currentStart,
+            endMinutes: intervalEnd,
+          });
+        }
+      }
+    }
+
+    // Фильтрация по текущему времени: окна не раньше текущей минуты + 1
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const targetDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    
+    // Прошлые дни — нет свободных окон
+    if (targetDay < today) {
+      return [];
+    }
+    
+    // Будущие дни — все окна доступны
+    if (targetDay > today) {
+      return freeSlots;
+    }
+    
+    // Сегодня — фильтруем по текущему времени
+    const currentMinutes = now.getHours() * 60 + now.getMinutes() + 1;
+    
+    return freeSlots
+      .filter(slot => slot.endMinutes > currentMinutes) // Исключаем окна, которые уже закончились
+      .map(slot => {
+        if (slot.startMinutes >= currentMinutes) {
+          return slot; // Окно полностью в будущем
+        }
+        // Обрезаем окно: начало переносим на currentMinutes
+        const newStartMinutes = currentMinutes;
+        return {
+          ...slot,
+          startMinutes: newStartMinutes,
+          start: `${Math.floor(newStartMinutes / 60).toString().padStart(2, "0")}:${(newStartMinutes % 60).toString().padStart(2, "0")}`,
+        };
+      })
+      .filter(slot => (slot.endMinutes - slot.startMinutes) >= minDuration); // Проверяем длительность после обрезки
+  };
+
+  // Проверка: есть ли свободное окно в этот день (для режима месяца)
+  const hasFreeWindowForDate = (date: Date): boolean => {
+    if (!freeWindowsMode || !freeWindowsData) return false;
+    const freeSlots = computeFreeWindowsForDate(date, freeWindowsDuration);
+    return freeSlots.length > 0;
+  };
+
+  // Обработка выбора свободного окна
+  const handleSelectFreeWindow = (slot: FreeWindowSlot) => {
+    if (!freeWindowsData || !freeWindowsKey) return;
+    
+    // Формируем время начала встречи в формате datetime-local
+    const y = slot.date.getFullYear();
+    const m = String(slot.date.getMonth() + 1).padStart(2, "0");
+    const d = String(slot.date.getDate()).padStart(2, "0");
+    const selectedTime = `${y}-${m}-${d}T${slot.start}`;
+    
+    // Выходим из режима окон
+    setActiveFreeWindowsKey(null);
+    
+    // Переходим на страницу встреч с параметрами
+    window.location.hash = `#/meetings?windowStart=${slot.start}&windowEnd=${slot.end}&restoreKey=${encodeURIComponent(freeWindowsKey)}&selectedTime=${encodeURIComponent(selectedTime)}`;
+  };
+
   // --- Actions ---
   const openDay = (day: number) => {
     setSelectedDate(new Date(year, month, day));
-    setModalMode('timeline');
     setShowModal(true);
   };
 
-  const handleSaveTask = () => {
-    // TODO: Реализовать API для сохранения личных задач
-    // Пока функция отключена - нет бэкенда для личных задач
-    if (!selectedDate || !newTask.title) return;
-    console.log('Создание задачи пока не поддерживается:', newTask);
-    setNewTask({ title: "", description: "", time: "09:00", duration: 60 });
-    setModalMode('timeline');
-  };
-
-  const handleRedirectToMeetings = () => {
-    window.location.hash = "#/meetings";
+  const handleGoToMeetings = () => {
+    // В режиме свободных окон восстанавливаем данные из freeWindowsCache
+    if (freeWindowsMode && freeWindowsKey) {
+      window.location.hash = `#/meetings?restoreKey=${encodeURIComponent(freeWindowsKey)}`;
+    } else {
+      window.location.hash = "#/meetings?restoreFormDraft=1";
+    }
   };
 
   // --- Рендер Timeline ---
   const renderTimeline = () => {
     if (!selectedDate) return null;
-    const workIntervals = getWorkIntervalsForDate(selectedDate);
-    const dayMeetings = getMeetingsForDate(selectedDate);
-    const isMyCalendar = !selectedEmployee;
     const isToday = new Date().toDateString() === selectedDate.toDateString();
 
     // Константа высоты часа в пикселях
     const HOUR_HEIGHT = 60; 
+
+    // В режиме свободных окон - показываем только зелёные окна
+    if (freeWindowsMode && freeWindowsData) {
+      const freeSlots = computeFreeWindowsForDate(selectedDate, freeWindowsDuration);
+      
+      return (
+        <div style={{flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
+          {/* Верхняя панель модалки */}
+          <div style={{padding: '16px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#E8F5E9', zIndex: 10}}>
+            <button onClick={() => setShowModal(false)} style={{border: 'none', background: 'none', fontSize: '16px', color: '#2E7D32'}}>Закрыть</button>
+            <span style={{fontWeight: '600', fontSize: '17px', color: '#2E7D32'}}>
+              {selectedDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'long'})}
+            </span>
+            <div style={{width: 24}}></div>
+          </div>
+
+          {/* Информация о режиме */}
+          <div style={{padding: '12px 16px', background: '#C8E6C9', borderBottom: '1px solid #A5D6A7'}}>
+            <span style={{fontSize: '13px', color: '#1B5E20'}}>
+              Выберите свободное окно для встречи ({freeWindowsDuration} мин.)
+            </span>
+          </div>
+
+          {/* Скроллируемая область таймлайна */}
+          <div ref={scrollRef} style={{flex: 1, overflowY: 'auto', position: 'relative', padding: '10px 0'}}>
+            
+            {/* Сетка часов (00:00 - 23:00) */}
+            {Array.from({length: 24}).map((_, hour) => (
+              <div key={hour} style={{height: `${HOUR_HEIGHT}px`, position: 'relative', display: 'flex'}}>
+                <div style={{width: '50px', textAlign: 'right', paddingRight: '10px', fontSize: '12px', color: '#999', transform: 'translateY(-6px)'}}>
+                  {`${hour}:00`}
+                </div>
+                <div style={{flex: 1, borderTop: '1px solid #f0f0f0'}}></div>
+              </div>
+            ))}
+
+            {/* Свободные окна - зелёные блоки */}
+            {freeSlots.map((slot, idx) => {
+              const top = (slot.startMinutes / 60) * HOUR_HEIGHT + 10;
+              const height = ((slot.endMinutes - slot.startMinutes) / 60) * HOUR_HEIGHT;
+
+              return (
+                <div 
+                  key={`free-${idx}`}
+                  onClick={() => handleSelectFreeWindow(slot)}
+                  style={{
+                    position: 'absolute',
+                    top: `${top}px`,
+                    left: '60px',
+                    right: '10px',
+                    height: `${height}px`,
+                    minHeight: '20px',
+                    background: '#C8E6C9',
+                    borderLeft: '4px solid #4CAF50',
+                    borderRadius: '4px',
+                    padding: '4px 8px',
+                    overflow: 'hidden',
+                    fontSize: '12px',
+                    zIndex: 2,
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'center'
+                  }}
+                >
+                  <div style={{
+                    fontWeight: '600', 
+                    color: '#2E7D32', 
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}>
+                    Свободно
+                  </div>
+                  <div style={{
+                    color: '#388E3C', 
+                    fontSize: '11px',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    {slot.start} — {slot.end}
+                  </div>
+                </div>
+              );
+            })}
+
+            {freeSlots.length === 0 && (
+              <div style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                textAlign: 'center',
+                color: '#888',
+                fontSize: '14px'
+              }}>
+                Нет свободных окон на этот день
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Обычный режим
+    const workIntervals = getWorkIntervalsForDate(selectedDate);
+    const dayMeetings = getMeetingsForDate(selectedDate);
 
     return (
       <div style={{flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
@@ -329,9 +640,7 @@ export const FormCalPage: React.FC = () => {
           <span style={{fontWeight: '600', fontSize: '17px'}}>
             {selectedDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'long'})}
           </span>
-          {isMyCalendar ? (
-            <button onClick={() => setModalMode('select-type')} style={{border: 'none', background: 'none', fontSize: '24px', color: '#007AFF', lineHeight: 0}}>+</button>
-          ) : <div style={{width: 24}}></div>}
+          <div style={{width: 24}}></div>
         </div>
 
         {/* Скроллируемая область таймлайна */}
@@ -399,7 +708,7 @@ export const FormCalPage: React.FC = () => {
             const meetingDate = new Date(meeting.time);
             const startMinutes = meetingDate.getHours() * 60 + meetingDate.getMinutes();
             const top = (startMinutes / 60) * HOUR_HEIGHT + 10;
-            const duration = meeting.duration || 60; // По умолчанию 60 минут
+            const duration = meeting.duration || 40; // По умолчанию 40 минут
             const height = (duration / 60) * HOUR_HEIGHT;
 
             return (
@@ -453,46 +762,6 @@ export const FormCalPage: React.FC = () => {
     );
   };
 
-  // --- Рендер выбора типа и формы (оставляем как было, чуть упростив стили) ---
-  const renderActionScreens = () => {
-    if (modalMode === 'select-type') {
-      return (
-        <div style={{padding: '20px', height: '100%', background: '#f9f9f9'}}>
-           <div style={{background: '#fff', borderRadius: '16px', padding: '20px', boxShadow: '0 2px 10px rgba(0,0,0,0.05)'}}>
-              <h3 style={{textAlign: 'center', marginTop: 0}}>Добавить событие</h3>
-              <button onClick={() => setModalMode('create-task')} style={{width: '100%', padding: '15px', marginBottom: '10px', background: '#E8F5E9', color: '#2E7D32', border: 'none', borderRadius: '12px', fontWeight: 'bold'}}>
-                📝 Задача
-              </button>
-              <button onClick={handleRedirectToMeetings} style={{width: '100%', padding: '15px', marginBottom: '20px', background: '#FFF3E0', color: '#EF6C00', border: 'none', borderRadius: '12px', fontWeight: 'bold'}}>
-                📞 Созвон
-              </button>
-              <button onClick={() => setModalMode('timeline')} style={{width: '100%', padding: '12px', background: '#eee', border: 'none', borderRadius: '12px'}}>Отмена</button>
-           </div>
-        </div>
-      );
-    }
-    if (modalMode === 'create-task') {
-      return (
-        <div style={{padding: '20px', height: '100%', background: '#fff', display: 'flex', flexDirection: 'column'}}>
-          <h3 style={{textAlign: 'center'}}>Новая задача</h3>
-          <div style={{flex: 1}}>
-            <input type="text" placeholder="Название" className="form-input" value={newTask.title} onChange={e => setNewTask({...newTask, title: e.target.value})} style={{marginBottom: '15px'}} />
-            <div style={{display: 'flex', gap: '10px', marginBottom: '15px'}}>
-              <div style={{flex:1}}><label>Начало</label><input type="time" className="form-input" value={newTask.time} onChange={e => setNewTask({...newTask, time: e.target.value})} /></div>
-              <div style={{flex:1}}><label>Мин.</label><input type="number" className="form-input" value={newTask.duration} onChange={e => setNewTask({...newTask, duration: Number(e.target.value)})} /></div>
-            </div>
-            <textarea placeholder="Описание" className="form-input" rows={4} value={newTask.description} onChange={e => setNewTask({...newTask, description: e.target.value})} />
-          </div>
-          <div style={{display: 'flex', gap: '10px'}}>
-            <button onClick={() => setModalMode('select-type')} className="add-btn" style={{background: '#eee', color: '#333'}}>Назад</button>
-            <button onClick={handleSaveTask} className="add-btn">Сохранить</button>
-          </div>
-        </div>
-      );
-    }
-    return null;
-  };
-
   // --- Основной UI ---
   const firstDayIndex = getFirstDayOfMonth(year, month);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -502,51 +771,146 @@ export const FormCalPage: React.FC = () => {
     return e.fullname.toLowerCase().includes(q) || e.username.toLowerCase().includes(q);
   });
 
+  // Обработка выхода из режима свободных окон (кнопка "Отмена")
+  const handleExitFreeWindowsMode = () => {
+    // Сохраняем данные встречи в meetingFormDraftCache перед выходом
+    if (freeWindowsData?.meetingDraft) {
+      const draft = freeWindowsData.meetingDraft;
+      saveMeetingFormDraft({
+        topic: draft.topic,
+        memberIds: draft.memberIds,
+        time: draft.time ?? "", // Сохраняем введённое время
+        duration: String(draft.duration),
+        link: draft.link,
+        editId: draft.editId ?? null,
+        origTopic: draft.origTopic,
+        origMemberIds: draft.origMemberIds,
+        origTime: draft.origTime,
+        origDuration: draft.origDuration,
+        origLink: draft.origLink,
+      });
+    }
+    
+    setFreeWindowsMode(false);
+    setFreeWindowsKey(null);
+    setFreeWindowsData(null);
+    setActiveFreeWindowsKey(null);
+    window.location.hash = "#/calendar";
+  };
+
   return (
     <div style={{ padding: '20px', maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-      <h2 style={{marginBottom: '20px', fontSize: '22px', fontWeight: '700'}}>{selectedEmployee ? selectedEmployee.fullname : "Мой календарь"}</h2>
-      
-      {/* Поиск */}
-      <div style={{display: 'flex', gap: '10px', marginBottom: '20px', position: 'relative'}}>
-        <div style={{flex: 1, position: 'relative'}}>
-          <span style={{position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '16px', pointerEvents: 'none', zIndex: 1}}>🔍</span>
-          <input 
-            type="text" 
-            placeholder="Сотрудник..." 
-            value={searchQuery} 
-            onChange={(e) => setSearchQuery(e.target.value)} 
-            onFocus={() => setIsSearchFocused(true)} 
-            style={{width: '100%', padding: '10px 32px 10px 36px', borderRadius: '10px', border: '1px solid #ddd', background: '#f5f5f5', outline: 'none', boxSizing: 'border-box'}} 
-          />
-          {searchQuery && (
-            <button 
-              onClick={() => {setSearchQuery(""); setIsSearchFocused(false);}}
-              style={{position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '16px', color: '#999', lineHeight: 1}}
+      {/* Режим свободных окон - специальный заголовок */}
+      {freeWindowsMode ? (
+        <>
+          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
+            <button
+              onClick={handleGoToMeetings}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#007AFF',
+                fontSize: '14px',
+                cursor: 'pointer',
+                padding: 0,
+                fontWeight: 500,
+              }}
             >
-              ✕
+              Встречи
             </button>
-          )}
+            <h2 style={{margin: 0, fontSize: '22px', fontWeight: '700', color: '#2E7D32'}}>Свободные окна</h2>
+            <button
+              onClick={handleExitFreeWindowsMode}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#FF3B30',
+                fontSize: '14px',
+                cursor: 'pointer',
+                padding: 0,
+                fontWeight: 500,
+              }}
+            >
+              Отмена
+            </button>
+          </div>
+          <div style={{
+            background: '#E8F5E9',
+            borderRadius: '10px',
+            padding: '12px 16px',
+            marginBottom: '20px',
+            border: '1px solid #C8E6C9'
+          }}>
+            <p style={{margin: 0, color: '#1B5E20', fontSize: '14px'}}>
+              Выберите подходящее время для встречи длительностью {freeWindowsDuration} мин.
+              Зелёные точки показывают дни со свободными окнами.
+            </p>
+          </div>
+        </>
+      ) : (
+        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px'}}>
+          <button
+            onClick={handleGoToMeetings}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#007AFF',
+              fontSize: '14px',
+              cursor: 'pointer',
+              padding: 0,
+              fontWeight: 500,
+            }}
+          >
+            Встречи
+          </button>
+          <h2 style={{margin: 0, fontSize: '22px', fontWeight: '700'}}>{selectedEmployee ? selectedEmployee.fullname : "Мой календарь"}</h2>
+          <div style={{width: 70}}></div>
         </div>
-        <button onClick={() => {setSelectedEmployee(null); setSearchQuery("")}} style={{background: selectedEmployee ? '#ddd' : '#40d0b0', color: selectedEmployee ? '#333' : '#fff', border: 'none', borderRadius: '10px', padding: '0 15px', fontWeight: '600'}}>Моё</button>
-        
-        {isSearchFocused && searchQuery && (
-          <div style={{position: 'absolute', top: '100%', left: 0, right: 70, background: 'white', zIndex: 10, border: '1px solid #eee', borderRadius: '10px', maxHeight: '200px', overflow: 'auto', boxShadow: '0 4px 10px rgba(0,0,0,0.1)'}}>
-            {filteredEmployees.length > 0 ? (
-              filteredEmployees.map(e => (
-                <div 
-                  key={e.id} 
-                  onClick={() => {setSelectedEmployee(e); setSearchQuery(`${e.username} — ${e.fullname}`); setIsSearchFocused(false)}} 
-                  style={{padding: '10px', borderBottom: '1px solid #eee', cursor: 'pointer'}}
-                >
-                  {e.username} — {e.fullname}
-                </div>
-              ))
-            ) : (
-              <p style={{padding: '10px', color: '#888', margin: 0}}>Совпадений нет</p>
+      )}
+      
+      {/* Поиск (скрыт в режиме свободных окон) */}
+      {!freeWindowsMode && (
+        <div style={{display: 'flex', gap: '10px', marginBottom: '20px', position: 'relative'}}>
+          <div style={{flex: 1, position: 'relative'}}>
+            <span style={{position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '16px', pointerEvents: 'none', zIndex: 1}}>🔍</span>
+            <input 
+              type="text" 
+              placeholder="Сотрудник..." 
+              value={searchQuery} 
+              onChange={(e) => setSearchQuery(e.target.value)} 
+              onFocus={() => setIsSearchFocused(true)} 
+              style={{width: '100%', padding: '10px 32px 10px 36px', borderRadius: '10px', border: '1px solid #ddd', background: '#f5f5f5', outline: 'none', boxSizing: 'border-box'}} 
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => {setSearchQuery(""); setIsSearchFocused(false);}}
+                style={{position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '16px', color: '#999', lineHeight: 1}}
+              >
+                ✕
+              </button>
             )}
           </div>
-        )}
-      </div>
+          <button onClick={() => {setSelectedEmployee(null); setSearchQuery("")}} style={{background: selectedEmployee ? '#ddd' : '#40d0b0', color: selectedEmployee ? '#333' : '#fff', border: 'none', borderRadius: '10px', padding: '0 15px', fontWeight: '600'}}>Моё</button>
+          
+          {isSearchFocused && searchQuery && (
+            <div style={{position: 'absolute', top: '100%', left: 0, right: 70, background: 'white', zIndex: 10, border: '1px solid #eee', borderRadius: '10px', maxHeight: '200px', overflow: 'auto', boxShadow: '0 4px 10px rgba(0,0,0,0.1)'}}>
+              {filteredEmployees.length > 0 ? (
+                filteredEmployees.map(e => (
+                  <div 
+                    key={e.id} 
+                    onClick={() => {setSelectedEmployee(e); setSearchQuery(`${e.username} — ${e.fullname}`); setIsSearchFocused(false)}} 
+                    style={{padding: '10px', borderBottom: '1px solid #eee', cursor: 'pointer'}}
+                  >
+                    {e.username} — {e.fullname}
+                  </div>
+                ))
+              ) : (
+                <p style={{padding: '10px', color: '#888', margin: 0}}>Совпадений нет</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Календарь Сетка */}
       <div style={{background: '#fff', borderRadius: '20px', padding: '15px', boxShadow: '0 2px 15px rgba(0,0,0,0.05)'}}>
@@ -562,6 +926,21 @@ export const FormCalPage: React.FC = () => {
              const d = i + 1;
              const dayDate = new Date(year, month, d);
              const isToday = new Date().toDateString() === dayDate.toDateString();
+             
+             // В режиме свободных окон показываем только зелёные точки
+             if (freeWindowsMode) {
+               const hasFreeWindow = hasFreeWindowForDate(dayDate);
+               return (
+                 <div key={d} onClick={() => openDay(d)} style={{aspectRatio: '1', borderRadius: '10px', background: isToday ? '#40d0b0' : '#f5f5f5', color: isToday?'#fff':'#333', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer'}}>
+                   <span style={{fontWeight: '600'}}>{d}</span>
+                   <div style={{display: 'flex', gap: '3px', marginTop: '3px'}}>
+                     {hasFreeWindow && <div style={{width: '5px', height: '5px', borderRadius: '50%', background: isToday ? '#fff' : '#4CAF50'}}/>}
+                   </div>
+                 </div>
+               );
+             }
+             
+             // Обычный режим
              const hasSchedule = hasScheduleForDate(dayDate);
              const hasMeetings = hasMeetingsForDate(dayDate);
              return (
@@ -580,7 +959,7 @@ export const FormCalPage: React.FC = () => {
       {/* FULLSCREEN MODAL */}
       {showModal && (
         <div style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: '#fff', zIndex: 9999, display: 'flex', flexDirection: 'column'}}>
-          {modalMode === 'timeline' ? renderTimeline() : renderActionScreens()}
+          {renderTimeline()}
         </div>
       )}
 
@@ -667,9 +1046,9 @@ export const FormCalPage: React.FC = () => {
                       <br />
                       {new Date(selectedMeeting.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}
                       {' — '}
-                      {getEndTime(selectedMeeting.time, selectedMeeting.duration || 60)}
+                      {getEndTime(selectedMeeting.time, selectedMeeting.duration || 40)}
                       <span style={{color: '#888', marginLeft: '8px'}}>
-                        ({selectedMeeting.duration || 60} мин)
+                        ({selectedMeeting.duration || 40} мин)
                       </span>
                     </>
                   )}
