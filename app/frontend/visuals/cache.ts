@@ -327,12 +327,14 @@ export const subtractMeetingFromFreeWindowsCache = (memberIds: number[], meeting
   const cached = freeWindowsCache.get(key);
   if (!cached) return;
   
-  // Добавляем встречу каждому участнику
+  // Добавляем или обновляем встречу у каждого участника
   for (const memberId of memberIds) {
     const memberMeetings = cached.meetings[memberId];
     if (memberMeetings) {
-      // Проверяем на дубликаты
-      if (!memberMeetings.some(m => m.id === meeting.id)) {
+      const idx = memberMeetings.findIndex(m => m.id === meeting.id);
+      if (idx !== -1) {
+        memberMeetings[idx] = meeting; // Обновляем существующую встречу
+      } else {
         memberMeetings.push(meeting);
       }
     } else {

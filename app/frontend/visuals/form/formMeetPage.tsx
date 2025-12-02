@@ -887,6 +887,8 @@ export const FormMeetPage: React.FC = () => {
           // Добавляем в кэш календаря создателя (если месяц закэширован)
           addMeetingToMonthCache(managerId, newMeeting);
           // Кэш участников НЕ трогаем - они ещё не приняли
+          // Вычитаем из кэша свободных окон
+          subtractMeetingFromFreeWindowsCache(selectedMemberIds, newMeeting);
         }
         
         if (window?.Telegram?.WebApp?.showAlert) {
@@ -981,6 +983,9 @@ export const FormMeetPage: React.FC = () => {
         
         // Обновляем в кэше страницы встреч
         updateMeetingInCreatorCache(managerId, editId, updatedMeeting);
+        
+        // Вычитаем из кэша свободных окон
+        subtractMeetingFromFreeWindowsCache(selectedMemberIds, updatedMeeting);
       }
       
       if (window?.Telegram?.WebApp?.showAlert) {

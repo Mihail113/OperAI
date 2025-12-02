@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { FormDirPage } from "./form/formDirPage";
 import { FormEmpPage } from "./form/formEmpPage";
+import { FormBossPage } from "./form/formBossPage";
 import { FormMeetPage } from "./form/formMeetPage";
 import { FormCalPage } from "./form/formCalPage";
 
@@ -9,7 +10,7 @@ const App: React.FC = () => {
   const [path, setPath] = useState("/");
 
   // Список допустимых маршрутов (включи сюда новые страницы)
-  const allowedPaths = ["/", "/form1", "/form2", "/meetings", "/calendar"];
+  const allowedPaths = ["/", "/form1", "/form2", "/form3", "/meetings", "/calendar"];
 
   useEffect(() => {
     const getInitialPath = () => {
@@ -33,7 +34,9 @@ const App: React.FC = () => {
     // Если хотите поддержать локальную навигацию по hash-кнопкам вне Telegram:
     const onHash = () => {
       // Не очищаем hash — там могут быть данные Telegram
-      const h = window.location.hash.startsWith("#/") ? window.location.hash.slice(1) : "/";
+      const rawHash = window.location.hash.startsWith("#/") ? window.location.hash.slice(1) : "/";
+      // Извлекаем путь без query параметров
+      const h = rawHash.split("?")[0];
       if (allowedPaths.includes(h)) setPath(h);
     };
     window.addEventListener("hashchange", onHash);
@@ -43,6 +46,7 @@ const App: React.FC = () => {
 
   if (path === "/form1") return <FormDirPage />;
   if (path === "/form2") return <FormEmpPage />;
+  if (path === "/form3") return <FormBossPage />;
   if (path === "/meetings") return <FormMeetPage />;
   if (path === "/calendar") return <FormCalPage/>;
 
