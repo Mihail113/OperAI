@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "../styles/formPage.css";
 import {
   Meeting,
@@ -256,6 +256,8 @@ export const FormMeetPage: React.FC = () => {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   // Состояния для редактирования
@@ -792,35 +794,52 @@ export const FormMeetPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Синхронная проверка через ref для предотвращения двойной отправки
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
 
     if (!meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingLink.trim()) {
       alert('Заполните все поля');
+      submittingRef.current = false;
+      setSubmitting(false);
       return;
     }
 
     const durationNum = meetingDuration ? parseInt(meetingDuration, 10) : null;
     if (meetingDuration && (isNaN(durationNum as number) || (durationNum as number) <= 0)) {
       alert('Введите продолжительность встречи в минутах');
+      submittingRef.current = false;
+      setSubmitting(false);
       return;
     }
     // Проверка на целое число
     if (meetingDuration && !Number.isInteger(Number(meetingDuration))) {
       alert('Введите целое число');
+      submittingRef.current = false;
+      setSubmitting(false);
       return;
     }
 
     if (!managerId) {
       alert('Не удалось определить id создателя');
+      submittingRef.current = false;
+      setSubmitting(false);
       return;
     }
 
     const meetingDate = parseLocalDateTime(meetingTime);
     if (!meetingDate) {
       alert('Некорректные дата и время встречи');
+      submittingRef.current = false;
+      setSubmitting(false);
       return;
     }
     if (meetingDate.getTime() < Date.now()) {
       alert('Дата и время встречи должны быть не ранее текущего момента');
+      submittingRef.current = false;
+      setSubmitting(false);
       return;
     }
     // if (!creator) {
@@ -862,6 +881,8 @@ export const FormMeetPage: React.FC = () => {
           setConflictMeetings(conflictRes.meetings || {});
           setConflictHasFreeWindows(hasFreeWindows);
           setConflictDialogVisible(true);
+          submittingRef.current = false;
+          setSubmitting(false);
           return;
         }
 
@@ -896,6 +917,8 @@ export const FormMeetPage: React.FC = () => {
         } else {
           alert('Встреча создана');
         }
+        submittingRef.current = false;
+        setSubmitting(false);
         resetForm();
         return;
       } catch (err: any) {
@@ -905,6 +928,8 @@ export const FormMeetPage: React.FC = () => {
         } else {
           alert(errMsg);
         }
+        submittingRef.current = false;
+        setSubmitting(false);
         return;
       }
     }
@@ -912,6 +937,8 @@ export const FormMeetPage: React.FC = () => {
     // EDIT
     if (!isEditChanged) {
       window?.Telegram?.WebApp?.showAlert?.("Нет изменений");
+      submittingRef.current = false;
+      setSubmitting(false);
       return;
     }
 
@@ -949,6 +976,8 @@ export const FormMeetPage: React.FC = () => {
         setConflictMeetings(conflictRes.meetings || {});
         setConflictHasFreeWindows(hasFreeWindows);
         setConflictDialogVisible(true);
+        submittingRef.current = false;
+        setSubmitting(false);
         return;
       }
       
@@ -993,6 +1022,8 @@ export const FormMeetPage: React.FC = () => {
       } else {
         alert("Изменения сохранены");
       }
+      submittingRef.current = false;
+      setSubmitting(false);
       resetForm();
     } catch (err: any) {
       const errMsg = err?.message || "Ошибка сохранения";
@@ -1001,6 +1032,8 @@ export const FormMeetPage: React.FC = () => {
       } else {
         alert(errMsg);
       }
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -1195,6 +1228,11 @@ export const FormMeetPage: React.FC = () => {
   const handleForceCreate = async () => {
     setConflictDialogVisible(false);
     
+    // Синхронная проверка через ref для предотвращения двойной отправки
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    
     const durationNum = meetingDuration ? parseInt(meetingDuration, 10) : null;
     const isoTime = toIsoUtcFromLocal(meetingTime);
     
@@ -1221,6 +1259,8 @@ export const FormMeetPage: React.FC = () => {
           } else {
             alert(errMsg);
           }
+          submittingRef.current = false;
+          setSubmitting(false);
           return;
         }
 
@@ -1254,6 +1294,8 @@ export const FormMeetPage: React.FC = () => {
         } else {
           alert('Встреча создана');
         }
+        submittingRef.current = false;
+        setSubmitting(false);
         resetForm();
       } catch (err: any) {
         const errMsg = `Ошибка сохранения: ${err?.message || err}`;
@@ -1262,6 +1304,8 @@ export const FormMeetPage: React.FC = () => {
         } else {
           alert(errMsg);
         }
+        submittingRef.current = false;
+        setSubmitting(false);
       }
     } else {
       // Force редактирование встречи
@@ -1290,6 +1334,8 @@ export const FormMeetPage: React.FC = () => {
           } else {
             alert(errMsg);
           }
+          submittingRef.current = false;
+          setSubmitting(false);
           return;
         }
         
@@ -1324,6 +1370,8 @@ export const FormMeetPage: React.FC = () => {
         } else {
           alert("Изменения сохранены");
         }
+        submittingRef.current = false;
+        setSubmitting(false);
         resetForm();
       } catch (err: any) {
         const errMsg = err?.message || "Ошибка сохранения";
@@ -1332,6 +1380,8 @@ export const FormMeetPage: React.FC = () => {
         } else {
           alert(errMsg);
         }
+        submittingRef.current = false;
+        setSubmitting(false);
       }
     }
   };
@@ -1591,22 +1641,24 @@ export const FormMeetPage: React.FC = () => {
             type="submit"
             className="submit-btn"
             disabled={
-              !meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
+              submitting || !meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
             }
             aria-disabled={
-              !meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
+              submitting || !meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged)
             }
             data-disabled={
-              (!meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged))
+              (submitting || !meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim() || (editId !== null && !isEditChanged))
                 ? "true"
                 : undefined
             }
             title={
-              (!meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim())
-                ? "Заполните все поля"
-                : "Нет изменений"
+              submitting
+                ? "Отправка..."
+                : (!meetingTopic.trim() || selectedMemberIds.length === 0 || !meetingTime || !meetingDuration.trim() || !meetingLink.trim())
+                  ? "Заполните все поля"
+                  : "Нет изменений"
             }>
-            {editId ? "Сохранить изменения" : "Создать встречу"}
+            {submitting ? "Отправка..." : (editId ? "Сохранить изменения" : "Создать встречу")}
           </button>
 
           {editId && (

@@ -574,3 +574,225 @@ textarea {
 button {
   font-family: inherit;
 }
+
+/* === Стили для версионирования вопросов (редактирование профиля) === */
+
+/* Удалённые вопросы (были в старой версии, удалены из новой) */
+.question-deleted label {
+  color: #dc3545;
+}
+
+.question-deleted input,
+.question-deleted .readonly-input {
+  background-color: #fff5f5;
+  border-color: #f5c6cb;
+  color: #721c24;
+  cursor: not-allowed;
+}
+
+.deleted-badge {
+  font-size: 12px;
+  font-weight: normal;
+  color: #dc3545;
+  opacity: 0.8;
+}
+
+/* Добавленные вопросы (новые в текущей версии) */
+.question-added label {
+  color: #28a745;
+}
+
+.question-added input {
+  border-color: #c3e6cb;
+}
+
+.question-added input:focus {
+  border-color: #28a745;
+  box-shadow: 0 0 0 3px rgba(40, 167, 69, 0.2);
+}
+
+.added-badge {
+  font-size: 12px;
+  font-weight: normal;
+  color: #28a745;
+  opacity: 0.8;
+}
+
+/* Readonly input для удалённых вопросов */
+.readonly-input {
+  opacity: 0.7;
+}
+
+/* === Стили для readonly начальников (режим редактирования) === */
+.managers-readonly {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 8px;
+}
+
+.managers-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.managers-list li {
+  background: white;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #495057;
+}
+
+/* === Стили для pending change (сравнение Было/Стало) === */
+.pending-change-notice {
+  margin-bottom: 16px;
+}
+
+.pending-question {
+  margin-bottom: 20px;
+}
+
+.pending-question label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: #444;
+}
+
+.pending-question input {
+  background: #f8f9fa;
+  cursor: not-allowed;
+}
+
+/* Изменённые поля - Было/Стало */
+.changed-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 55px;
+  flex-shrink: 0;
+}
+
+.was-label {
+  color: #856404;
+}
+
+.became-label {
+  color: #155724;
+}
+
+.was-input {
+  background-color: #fff8e6 !important;
+  border-color: #ffc107 !important;
+  color: #856404 !important;
+}
+
+.became-input {
+  background-color: #e8f5e9 !important;
+  border-color: #28a745 !important;
+  color: #155724 !important;
+}
+
+/* Расписание в pending */
+.schedule-pending .schedule-display {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 0;
+  font-family: inherit;
+  font-size: 14px;
+  white-space: pre-line;
+  color: #495057;
+}
+
+.schedule-changed {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.schedule-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.schedule-row .field-label {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.was-schedule {
+  background-color: #fff8e6 !important;
+  border-color: #ffc107 !important;
+  color: #856404 !important;
+}
+
+.became-schedule {
+  background-color: #e8f5e9 !important;
+  border-color: #28a745 !important;
+  color: #155724 !important;
+}
+
+/* Удалённые вопросы в pending */
+.pending-question.question-deleted label {
+  color: #dc3545;
+}
+
+.pending-question.question-deleted input {
+  background-color: #fff5f5 !important;
+  border-color: #f5c6cb !important;
+  color: #721c24 !important;
+}
+
+/* Добавленные вопросы в pending */
+.pending-question.question-added label {
+  color: #28a745;
+}
+
+.pending-question.question-added input {
+  background-color: #e8f5e9 !important;
+  border-color: #c3e6cb !important;
+  color: #155724 !important;
+}
+
+.question-block.readonly input {
+  cursor: not-allowed;
+  opacity: 0.8;
+}
+
+/* === Адаптивность для pending === */
+@media (max-width: 600px) {
+  .field-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .field-label {
+    min-width: auto;
+  }
+
+  .schedule-row {
+    gap: 4px;
+  }
+}

@@ -57,6 +57,7 @@ export const FormDirPage: React.FC = () => {
 
   const onSubmit: React.FormEventHandler<HTMLFormElement> = async (e) => {
     e.preventDefault();
+    setLoading(true);
 
     const questions = employeeQuestions.filter((q) => q.trim() !== "");
     // if (!questions.length) {
@@ -74,7 +75,6 @@ export const FormDirPage: React.FC = () => {
     }
 
     try {
-      setLoading(true);
       const resp = await fetch(
         `${API_URL}/create_questions?actor_username=${encodeURIComponent(username)}`,
         {
