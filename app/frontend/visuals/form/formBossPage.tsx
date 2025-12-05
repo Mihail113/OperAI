@@ -30,6 +30,8 @@ export const FormBossPage: React.FC = () => {
   // Оригинальные данные для отслеживания изменений (только для редактирования)
   const [originalAnswers, setOriginalAnswers] = useState<string[] | null>(null);
   const [originalSchedule, setOriginalSchedule] = useState<ScheduleDay[] | null>(null);
+  // Флаг: было ли расписание в БД (для отображения предупреждения)
+  const [hadScheduleInDb, setHadScheduleInDb] = useState<boolean>(true);
 
   const [actorUsername, setActorUsername] = useState<string>("");
   const [userTgId, setUserTgId] = useState<number | null>(null);
@@ -113,8 +115,12 @@ export const FormBossPage: React.FC = () => {
           }));
           setSchedule(loadedSchedule);
           setOriginalSchedule(loadedSchedule);
+          setHadScheduleInDb(true);
         } else {
-          setOriginalSchedule([...DEFAULT_SCHEDULE]);
+          // Расписание не заполнено — оставляем schedule как DEFAULT_SCHEDULE для отображения,
+          // но originalSchedule = null для правильного сравнения
+          setOriginalSchedule(null);
+          setHadScheduleInDb(false);
         }
       } catch (e) {
         console.error("Ошибка загрузки профиля:", e);
@@ -137,7 +143,10 @@ export const FormBossPage: React.FC = () => {
   // Проверка наличия изменений (для режима редактирования)
   const hasChanges = useMemo(() => {
     if (isInitial) return true; // При регистрации всегда разрешаем отправку
-    if (!originalAnswers || !originalSchedule) return false;
+    if (!originalAnswers) return false;
+    
+    // Если расписание не было заполнено — считаем, что изменения есть
+    if (!originalSchedule) return true;
 
     // Сравниваем ответы
     const answersChanged = answers.some((a, i) => (a ?? "").trim() !== (originalAnswers[i] ?? "").trim());
@@ -208,7 +217,8 @@ export const FormBossPage: React.FC = () => {
       payload.old_first_name = originalAnswers[0] || "";
       payload.old_last_name = originalAnswers[1] || "";
       payload.old_patronymic = originalAnswers[2] || "";
-      payload.old_schedule = oldSchedulePayload ? JSON.stringify(oldSchedulePayload) : "[]";
+      // Если расписание не было заполнено в БД, отправляем null
+      payload.old_schedule = hadScheduleInDb && oldSchedulePayload ? JSON.stringify(oldSchedulePayload) : null;
     }
 
     setLoading(true);
@@ -287,6 +297,22 @@ export const FormBossPage: React.FC = () => {
               />
             </div>
           ))}
+
+          {!hadScheduleInDb && !isInitial && (
+            <div style={{
+              backgroundColor: "#fff3cd",
+              border: "1px solid #ffc107",
+              borderRadius: "8px",
+              padding: "12px",
+              marginBottom: "16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px"
+            }}>
+              <span style={{ color: "#856404", fontSize: "20px" }}>⚠️</span>
+              <span style={{ color: "#856404" }}>Ваше расписание не заполнено, предложены данные по умолчанию</span>
+            </div>
+          )}
 
           <ScheduleInput
             schedule={schedule}

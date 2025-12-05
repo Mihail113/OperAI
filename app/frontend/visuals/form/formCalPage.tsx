@@ -15,6 +15,7 @@ import {
   setActiveFreeWindowsKey,
   FreeWindowsData,
   saveMeetingFormDraft,
+  getMeetingFormDraft,
 } from "../cache";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
@@ -61,6 +62,12 @@ export const FormCalPage: React.FC = () => {
 
   // --- Попап встречи ---
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
+
+  // --- Попап создания встречи (клик на время в календаре) ---
+  const [createMeetingPopup, setCreateMeetingPopup] = useState<{
+    hour: number;
+    participant: { username: string; fullname: string; id: number } | null;
+  } | null>(null);
 
   // --- Линия времени (Current Time Line) ---
   const [nowMinutes, setNowMinutes] = useState(0);
@@ -629,13 +636,15 @@ export const FormCalPage: React.FC = () => {
     }
 
     // Обычный режим
-    const workIntervals = getWorkIntervalsForDate(selectedDate);
-    const dayMeetings = getMeetingsForDate(selectedDate);
+    // Для начальников скрываем расписание и встречи (данные загружены для расчёта окон, но не отображаются)
+    const isManagerSelected = selectedEmployee?.isManager === true;
+    const workIntervals = isManagerSelected ? [] : getWorkIntervalsForDate(selectedDate);
+    const dayMeetings = isManagerSelected ? [] : getMeetingsForDate(selectedDate);
 
     return (
       <div style={{flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
         {/* Верхняя панель модалки */}
-        <div style={{padding: '16px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff', zIndex: 10}}>
+        <div style={{padding: '16px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: isManagerSelected ? '#FFF9C4' : '#fff', zIndex: 10}}>
           <button onClick={() => setShowModal(false)} style={{border: 'none', background: 'none', fontSize: '16px', color: '#007AFF'}}>Закрыть</button>
           <span style={{fontWeight: '600', fontSize: '17px'}}>
             {selectedDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'long'})}
@@ -643,22 +652,63 @@ export const FormCalPage: React.FC = () => {
           <div style={{width: 24}}></div>
         </div>
 
+        {/* Информация о скрытии данных начальника */}
+        {isManagerSelected && (
+          <div style={{padding: '12px 16px', background: '#FFF9C4', borderBottom: '1px solid #FFD54F'}}>
+            <span style={{fontSize: '13px', color: '#F57F17'}}>
+              Расписание и встречи начальника скрыты. Данные учитываются при расчёте свободных окон.
+            </span>
+          </div>
+        )}
+
         {/* Скроллируемая область таймлайна */}
         <div ref={scrollRef} style={{flex: 1, overflowY: 'auto', position: 'relative', padding: '10px 0'}}>
           
           {/* Сетка часов (00:00 - 23:00) */}
-          {Array.from({length: 24}).map((_, hour) => (
-            <div key={hour} style={{height: `${HOUR_HEIGHT}px`, position: 'relative', display: 'flex'}}>
-              {/* Время слева */}
-              <div style={{width: '50px', textAlign: 'right', paddingRight: '10px', fontSize: '12px', color: '#999', transform: 'translateY(-6px)'}}>
-                {`${hour}:00`}
+          {Array.from({length: 24}).map((_, hour) => {
+            // Проверяем, можно ли кликнуть на этот час (только будущее время)
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const selectedDay = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+            const isPastDay = selectedDay < today;
+            const isCurrentDay = selectedDay.getTime() === today.getTime();
+            const currentHour = now.getHours();
+            const isPastHour = isCurrentDay && hour <= currentHour;
+            const isClickable = !isPastDay && !isPastHour;
+            
+            return (
+              <div 
+                key={hour} 
+                style={{
+                  height: `${HOUR_HEIGHT}px`, 
+                  position: 'relative', 
+                  display: 'flex', 
+                  cursor: isClickable ? 'pointer' : 'default'
+                }}
+                onClick={() => {
+                  if (!isClickable) return;
+                  // Показываем попап создания встречи
+                  setCreateMeetingPopup({
+                    hour,
+                    participant: selectedEmployee ? {
+                      username: selectedEmployee.username,
+                      fullname: selectedEmployee.fullname,
+                      id: selectedEmployee.id
+                    } : null
+                  });
+                }}
+              >
+                {/* Время слева */}
+                <div style={{width: '50px', textAlign: 'right', paddingRight: '10px', fontSize: '12px', color: '#999', transform: 'translateY(-6px)'}}>
+                  {`${hour}:00`}
+                </div>
+                {/* Линия */}
+                <div style={{flex: 1, borderTop: '1px solid #f0f0f0'}}></div>
               </div>
-              {/* Линия */}
-              <div style={{flex: 1, borderTop: '1px solid #f0f0f0'}}></div>
-            </div>
-          ))}
+            );
+          })}
 
-          {/* Рабочие часы - серый фон (z-index: 1, под встречами) */}
+          {/* Рабочие часы - серый фон (z-index: 1, под встречами) - скрыты для начальников */}
           {workIntervals.map((interval, idx) => {
             const startMinutes = timeToMinutes(interval.start);
             const endMinutes = timeToMinutes(interval.end);
@@ -677,7 +727,8 @@ export const FormCalPage: React.FC = () => {
                   background: '#E0E0E0',
                   borderRadius: '4px',
                   zIndex: 1,
-                  opacity: 0.5
+                  opacity: 0.5,
+                  pointerEvents: 'none'
                 }}
               />
             );
@@ -702,7 +753,7 @@ export const FormCalPage: React.FC = () => {
             </div>
           )}
 
-          {/* Встречи - синие блоки (z-index: 2, над рабочими часами) */}
+          {/* Встречи - синие блоки (z-index: 2, над рабочими часами) - скрыты для начальников */}
           {dayMeetings.map((meeting) => {
             if (!meeting.time) return null;
             const meetingDate = new Date(meeting.time);
@@ -714,7 +765,10 @@ export const FormCalPage: React.FC = () => {
             return (
               <div 
                 key={`meeting-${meeting.id}`}
-                onClick={() => setSelectedMeeting(meeting)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedMeeting(meeting);
+                }}
                 style={{
                   position: 'absolute',
                   top: `${top}px`,
@@ -863,7 +917,7 @@ export const FormCalPage: React.FC = () => {
           >
             Встречи
           </button>
-          <h2 style={{margin: 0, fontSize: '22px', fontWeight: '700'}}>{selectedEmployee ? selectedEmployee.fullname : "Мой календарь"}</h2>
+          <h2 style={{margin: 0, fontSize: '22px', fontWeight: '700', color: selectedEmployee?.isManager ? '#F57F17' : undefined}}>{selectedEmployee ? selectedEmployee.fullname : "Мой календарь"}</h2>
           <div style={{width: 70}}></div>
         </div>
       )}
@@ -899,7 +953,12 @@ export const FormCalPage: React.FC = () => {
                   <div 
                     key={e.id} 
                     onClick={() => {setSelectedEmployee(e); setSearchQuery(`${e.username} — ${e.fullname}`); setIsSearchFocused(false)}} 
-                    style={{padding: '10px', borderBottom: '1px solid #eee', cursor: 'pointer'}}
+                    style={{
+                      padding: '10px', 
+                      borderBottom: '1px solid #eee', 
+                      cursor: 'pointer',
+                      ...(e.isManager ? { background: '#FFF9C4' } : {})
+                    }}
                   >
                     {e.username} — {e.fullname}
                   </div>
@@ -941,8 +1000,10 @@ export const FormCalPage: React.FC = () => {
              }
              
              // Обычный режим
-             const hasSchedule = hasScheduleForDate(dayDate);
-             const hasMeetings = hasMeetingsForDate(dayDate);
+             // Для начальников не показываем точки (их данные скрыты)
+             const isManagerSelected = selectedEmployee?.isManager === true;
+             const hasSchedule = !isManagerSelected && hasScheduleForDate(dayDate);
+             const hasMeetings = !isManagerSelected && hasMeetingsForDate(dayDate);
              return (
                <div key={d} onClick={() => openDay(d)} style={{aspectRatio: '1', borderRadius: '10px', background: isToday ? '#40d0b0' : '#f5f5f5', color: isToday?'#fff':'#333', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer'}}>
                  <span style={{fontWeight: '600'}}>{d}</span>
@@ -1111,6 +1172,191 @@ export const FormCalPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* CREATE/RESCHEDULE MEETING POPUP */}
+      {createMeetingPopup && selectedDate && (() => {
+        // Получаем черновик для проверки режима редактирования
+        const draft = getMeetingFormDraft();
+        const isEditMode = draft?.editId != null;
+        const meetingTopic = draft?.topic || '';
+        const meetingDuration = draft?.duration || '';
+        const originalTime = draft?.origTime || draft?.time || '';
+        
+        // Форматируем оригинальное время
+        let originalTimeFormatted = '';
+        if (originalTime) {
+          const origDate = new Date(originalTime);
+          if (!isNaN(origDate.getTime())) {
+            originalTimeFormatted = `${origDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'long'})}, ${origDate.toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'})}`;
+          }
+        }
+        
+        // Форматируем новое время
+        const newTimeFormatted = `${selectedDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'long'})}, ${String(createMeetingPopup.hour).padStart(2, '0')}:00`;
+        
+        return (
+          <div 
+            style={{
+              position: 'fixed', 
+              top: 0, 
+              left: 0, 
+              right: 0, 
+              bottom: 0, 
+              background: 'rgba(0, 0, 0, 0.5)', 
+              zIndex: 10001, 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              padding: '20px'
+            }}
+            onClick={() => setCreateMeetingPopup(null)}
+          >
+            <div 
+              style={{
+                background: '#fff',
+                borderRadius: '16px',
+                width: '100%',
+                maxWidth: '340px',
+                padding: '24px',
+                boxShadow: '0 10px 40px rgba(0,0,0,0.2)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 style={{margin: '0 0 16px 0', fontSize: '18px', fontWeight: '600', color: '#333', textAlign: 'center'}}>
+                {isEditMode ? 'Желаете перенести встречу?' : 'Желаете создать встречу?'}
+              </h3>
+              
+              {/* В режиме редактирования показываем тему */}
+              {isEditMode && meetingTopic && (
+                <div style={{marginBottom: '16px', padding: '12px', background: '#FFF3E0', borderRadius: '10px'}}>
+                  <div style={{fontSize: '13px', color: '#E65100', marginBottom: '4px'}}>Тема</div>
+                  <div style={{fontSize: '15px', fontWeight: '600', color: '#E65100'}}>
+                    {meetingTopic}
+                  </div>
+                </div>
+              )}
+              
+              {/* В режиме редактирования показываем С / На */}
+              {isEditMode && originalTimeFormatted ? (
+                <>
+                  <div style={{marginBottom: '12px', padding: '12px', background: '#FFEBEE', borderRadius: '10px'}}>
+                    <div style={{fontSize: '13px', color: '#C62828', marginBottom: '4px'}}>С</div>
+                    <div style={{fontSize: '15px', fontWeight: '600', color: '#C62828'}}>
+                      {originalTimeFormatted}
+                    </div>
+                  </div>
+                  <div style={{marginBottom: '16px', padding: '12px', background: '#E8F5E9', borderRadius: '10px'}}>
+                    <div style={{fontSize: '13px', color: '#2E7D32', marginBottom: '4px'}}>На</div>
+                    <div style={{fontSize: '15px', fontWeight: '600', color: '#2E7D32'}}>
+                      {newTimeFormatted}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={{marginBottom: '16px', padding: '12px', background: '#f5f5f5', borderRadius: '10px'}}>
+                  <div style={{fontSize: '13px', color: '#888', marginBottom: '4px'}}>Время начала</div>
+                  <div style={{fontSize: '16px', fontWeight: '600', color: '#333'}}>
+                    {newTimeFormatted}
+                  </div>
+                </div>
+              )}
+              
+              {/* Продолжительность (в режиме редактирования) */}
+              {isEditMode && meetingDuration && (
+                <div style={{marginBottom: '16px', padding: '12px', background: '#f5f5f5', borderRadius: '10px'}}>
+                  <div style={{fontSize: '13px', color: '#888', marginBottom: '4px'}}>Продолжительность</div>
+                  <div style={{fontSize: '15px', fontWeight: '600', color: '#333'}}>
+                    {meetingDuration} мин.
+                  </div>
+                </div>
+              )}
+
+              {createMeetingPopup.participant && (
+                <div style={{marginBottom: '16px', padding: '12px', background: '#E3F2FD', borderRadius: '10px'}}>
+                  <div style={{fontSize: '13px', color: '#1565C0', marginBottom: '4px'}}>И приглашенным участником</div>
+                  <div style={{fontSize: '15px', fontWeight: '600', color: '#1976D2'}}>
+                    {createMeetingPopup.participant.username}
+                  </div>
+                  <div style={{fontSize: '14px', color: '#1976D2'}}>
+                    {createMeetingPopup.participant.fullname}
+                  </div>
+                </div>
+              )}
+
+              <div style={{display: 'flex', gap: '12px'}}>
+                <button
+                  onClick={() => setCreateMeetingPopup(null)}
+                  style={{
+                    flex: 1,
+                    padding: '14px',
+                    background: '#FFEBEE',
+                    color: '#C62828',
+                    border: 'none',
+                    borderRadius: '10px',
+                    fontSize: '16px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Нет
+                </button>
+                <button
+                  onClick={() => {
+                    // Формируем дату и время
+                    const y = selectedDate.getFullYear();
+                    const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
+                    const d = String(selectedDate.getDate()).padStart(2, '0');
+                    const hour = String(createMeetingPopup.hour).padStart(2, '0');
+                    const dateStr = `${y}-${m}-${d}`;
+                    
+                    // Получаем существующий черновик (если есть) и сохраняем его данные
+                    const existingDraft = getMeetingFormDraft();
+                    if (existingDraft) {
+                      // Сохраняем черновик с существующими данными (время перезапишется на странице встреч)
+                      saveMeetingFormDraft({
+                        topic: existingDraft.topic || '',
+                        memberIds: existingDraft.memberIds || [],
+                        time: existingDraft.time || '',
+                        duration: existingDraft.duration || '',
+                        link: existingDraft.link || '',
+                        editId: existingDraft.editId,
+                        origTopic: existingDraft.origTopic,
+                        origMemberIds: existingDraft.origMemberIds,
+                        origTime: existingDraft.origTime,
+                        origDuration: existingDraft.origDuration,
+                        origLink: existingDraft.origLink,
+                      });
+                    }
+                    
+                    // Формируем URL с параметрами
+                    let url = `#/meetings?quickCreate=1&date=${dateStr}&hour=${hour}`;
+                    if (createMeetingPopup.participant) {
+                      url += `&participantId=${createMeetingPopup.participant.id}`;
+                    }
+                    
+                    setCreateMeetingPopup(null);
+                    setShowModal(false);
+                    window.location.hash = url;
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '14px',
+                    background: '#4CAF50',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '10px',
+                    fontSize: '16px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Да
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

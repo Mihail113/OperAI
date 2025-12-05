@@ -382,6 +382,59 @@ export const FormMeetPage: React.FC = () => {
     const handleHashChange = () => {
       const hash = window.location.hash;
       
+      // Быстрое создание встречи из календаря (клик на время)
+      if (hash.includes("#/meetings") && hash.includes("quickCreate=1")) {
+        const params = new URLSearchParams(hash.split("?")[1] || "");
+        const dateStr = params.get("date");
+        const hourStr = params.get("hour");
+        const participantId = params.get("participantId");
+        
+        // Восстанавливаем черновик формы если есть (сохраняем другие поля)
+        const draft = getMeetingFormDraft();
+        let existingMemberIds: number[] = [];
+        if (draft) {
+          if (draft.topic) setMeetingTopic(draft.topic);
+          if (draft.duration) setMeetingDuration(draft.duration);
+          if (draft.link) setMeetingLink(draft.link);
+          if (draft.memberIds && draft.memberIds.length > 0) {
+            existingMemberIds = draft.memberIds;
+          }
+          
+          // Восстанавливаем режим редактирования если был активен
+          if (draft.editId != null) {
+            setEditId(draft.editId);
+            setOrigTopic(draft.origTopic ?? "");
+            setOrigMemberIds(draft.origMemberIds ?? []);
+            setOrigTime(draft.origTime ?? "");
+            setOrigDuration(draft.origDuration ?? "");
+            setOrigLink(draft.origLink ?? "");
+          }
+        }
+        
+        // Устанавливаем время начала
+        if (dateStr && hourStr) {
+          const meetingTimeValue = `${dateStr}T${hourStr}:00`;
+          setMeetingTime(meetingTimeValue);
+        }
+        
+        // Добавляем участника (не заменяем существующих)
+        if (participantId) {
+          const newParticipantId = parseInt(participantId, 10);
+          // Объединяем существующих участников с новым
+          const mergedIds = existingMemberIds.includes(newParticipantId)
+            ? existingMemberIds
+            : [...existingMemberIds, newParticipantId];
+          setSelectedMemberIds(mergedIds);
+        } else if (existingMemberIds.length > 0) {
+          // Нет нового участника, но есть сохранённые
+          setSelectedMemberIds(existingMemberIds);
+        }
+        
+        clearMeetingFormDraft();
+        window.location.hash = "#/meetings";
+        return;
+      }
+      
       // Восстановление черновика формы при возврате из календаря
       if (hash.includes("#/meetings") && hash.includes("restoreFormDraft=1")) {
         const draft = getMeetingFormDraft();
@@ -1496,15 +1549,25 @@ export const FormMeetPage: React.FC = () => {
           {searchTerm && (
             <div className="custom-select">
               {filteredSubordinates.length > 0 ? (
-                filteredSubordinates.map((o) => (
-                  <div
-                    key={o.id}
-                    className={`option ${selectedMemberIds.includes(o.id) ? "selected" : ""}`}
-                    onClick={() => handleSelectMember(o.id)}
-                  >
-                    {o.label}
-                  </div>
-                ))
+                filteredSubordinates.map((o) => {
+                  const isSelected = selectedMemberIds.includes(o.id);
+                  const isManager = o.raw.isManager;
+                  return (
+                    <div
+                      key={o.id}
+                      className="option"
+                      onClick={() => handleSelectMember(o.id)}
+                      style={{
+                        border: isManager ? "2px solid #FFD54F" : "2px solid #2196F3",
+                        background: isSelected ? (isManager ? "#FFF9C4" : "#90CAF9") : "transparent",
+                        borderRadius: "6px",
+                        marginBottom: "4px",
+                      }}
+                    >
+                      {o.label}
+                    </div>
+                  );
+                })
               ) : (
                 <p style={{ marginTop: 8, color: "#888" }}>Совпадений нет</p>
               )}
@@ -1517,8 +1580,18 @@ export const FormMeetPage: React.FC = () => {
               <ul>
                 {selectedMemberIds.map((id) => {
                   const sub = subordinateOptions.find(o => o.id === id);
+                  const isManager = sub?.raw?.isManager;
                   return (
-                    <li key={id}>
+                    <li 
+                      key={id}
+                      style={{
+                        border: isManager ? "2px solid #FFD54F" : "2px solid #2196F3",
+                        background: isManager ? "#FFF9C4" : "#90CAF9",
+                        borderRadius: "6px",
+                        padding: "8px 12px",
+                        marginBottom: "4px",
+                      }}
+                    >
                       {sub ? sub.label : `ID: ${id}`}{" "}
                       <button
                         type="button"

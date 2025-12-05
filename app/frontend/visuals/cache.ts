@@ -33,6 +33,7 @@ export interface Subordinate {
   id: number;
   username: string;
   fullname: string;
+  isManager?: boolean;  // true для непосредственных начальников
 }
 
 export interface SubordinatesData {
