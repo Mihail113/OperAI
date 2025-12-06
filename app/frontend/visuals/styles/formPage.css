@@ -780,6 +780,37 @@ button {
   opacity: 0.8;
 }
 
+/* === Стили для начальников (добавлен/удалён) === */
+
+/* Добавленный начальник в режиме редактирования (selected-list) */
+.selected-list li.manager-added {
+  background-color: #e8f5e9;
+  border-color: #28a745;
+  color: #155724;
+}
+
+/* Pending view: добавленный начальник (зелёный фон) */
+.managers-list li.manager-pending-added {
+  background-color: #d4edda;
+  border-color: #28a745;
+  color: #155724;
+}
+
+/* Pending view: удалённый начальник (красный фон) */
+.managers-list li.manager-pending-deleted {
+  background-color: #f8d7da;
+  border-color: #dc3545;
+  color: #721c24;
+}
+
+/* Badge для изменённых данных */
+.changed-badge {
+  font-size: 12px;
+  font-weight: normal;
+  color: #856404;
+  opacity: 0.8;
+}
+
 /* === Адаптивность для pending === */
 @media (max-width: 600px) {
   .field-row {

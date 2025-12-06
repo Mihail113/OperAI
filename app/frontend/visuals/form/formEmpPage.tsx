@@ -11,7 +11,7 @@ const FIRST4 = [
 ];
 const OPTIONAL_LABEL = "Отчество (при наличии)";
 
-type Manager = { username: string; fullname: string | null };
+type Manager = { id: number; username: string; fullname: string | null };
 
 type QuestionsResponse = {
   questions: string[];
@@ -25,7 +25,8 @@ type WorkerProfileResponse = {
   city: string;
   schedule: { day: number; intervals: { start: string; end: string }[] }[];
   additional_answers: Record<string, string>;
-  managers: Manager[];
+  managers: Manager[];  // Текущие начальники с id
+  available_managers: Manager[];  // Доступные начальники с id
   current_questions: Record<string, string>;
   answer_version: number;
   has_pending_change: boolean;
@@ -33,6 +34,8 @@ type WorkerProfileResponse = {
   pending_new_answers: Record<string, string> | null;
   pending_old_schedule: { day: number; intervals: { start: string; end: string }[] }[] | null;
   pending_new_schedule: { day: number; intervals: { start: string; end: string }[] }[] | null;
+  pending_old_managers: Manager[] | null;  // Старые начальники с id/username/fullname
+  pending_new_managers: Manager[] | null;  // Новые начальники с id/username/fullname
 };
 
 // Тип для категоризации вопросов при редактировании
@@ -51,17 +54,23 @@ export const FormEmpPage: React.FC = () => {
   const [isInitial, setIsInitial] = useState<boolean>(false);
   const [urlCompanyId, setUrlCompanyId] = useState<number | null>(null);
 
-  // State for managers selection (только для регистрации)
+  // State for managers selection
   const [possibleManagers, setPossibleManagers] = useState<Manager[]>([]);
   const [managersLoading, setManagersLoading] = useState(false);
   const [managersFetchError, setManagersFetchError] = useState<string | null>(null);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedManagers, setSelectedManagers] = useState<string[]>([]);
+  const [selectedManagers, setSelectedManagers] = useState<number[]>([]);  // Храним ID
   const [mgrError, setMgrError] = useState<string | null>(null);
   
-  // Текущие начальники (для режима редактирования, readonly)
+  // Текущие начальники (для режима редактирования) - с id/username/fullname
   const [currentManagers, setCurrentManagers] = useState<Manager[]>([]);
+  
+  // Оригинальные ID начальников для отслеживания изменений (только для редактирования)
+  const [originalManagers, setOriginalManagers] = useState<number[]>([]);
+  
+  // Доступные начальники для выбора в режиме редактирования (без себя и подчинённых)
+  const [availableManagers, setAvailableManagers] = useState<Manager[]>([]);
 
   // Schedule state - default Mon-Fri
   const [schedule, setSchedule] = useState<ScheduleDay[]>([...DEFAULT_SCHEDULE]);
@@ -82,6 +91,8 @@ export const FormEmpPage: React.FC = () => {
   const [pendingNewAnswers, setPendingNewAnswers] = useState<Record<string, string> | null>(null);
   const [pendingOldSchedule, setPendingOldSchedule] = useState<{ day: number; intervals: { start: string; end: string }[] }[] | null>(null);
   const [pendingNewSchedule, setPendingNewSchedule] = useState<{ day: number; intervals: { start: string; end: string }[] }[] | null>(null);
+  const [pendingOldManagers, setPendingOldManagers] = useState<string[] | null>(null);
+  const [pendingNewManagers, setPendingNewManagers] = useState<string[] | null>(null);
 
   const allQuestions = useMemo(() => {
     if (isInitial) {
@@ -171,8 +182,14 @@ export const FormEmpPage: React.FC = () => {
           return;
         }
 
-        // Устанавливаем начальников (readonly в режиме редактирования)
+        // Устанавливаем начальников для режима редактирования (теперь с id)
         setCurrentManagers(data.managers || []);
+        const managerIds = (data.managers || []).map(m => m.id);
+        setSelectedManagers(managerIds);
+        setOriginalManagers(managerIds);
+        
+        // Доступные начальники для выбора (без самого пользователя и его подчинённых) - с id
+        setAvailableManagers(data.available_managers || []);
 
         // Заполняем ответы на первые 4 вопроса
         const loadedAnswers = [
@@ -283,6 +300,8 @@ export const FormEmpPage: React.FC = () => {
           setPendingNewAnswers(data.pending_new_answers);
           setPendingOldSchedule(data.pending_old_schedule);
           setPendingNewSchedule(data.pending_new_schedule);
+          setPendingOldManagers(data.pending_old_managers);
+          setPendingNewManagers(data.pending_new_managers);
         }
 
       } catch (e) {
@@ -339,16 +358,34 @@ export const FormEmpPage: React.FC = () => {
     });
   };
 
-  // Convert to options for search (только для регистрации)
-  const managerOptions = useMemo(
-    () =>
-      possibleManagers.map((s) => ({
-        value: s.username,
-        label: `${s.username} — ${s.fullname || ""}`,
-        raw: s,
-      })),
-    [possibleManagers]
-  );
+  // Convert to options for search (используем id как value)
+  const managerOptions = useMemo(() => {
+    // В режиме регистрации используем possibleManagers (все сотрудники компании)
+    // В режиме редактирования используем availableManagers (без самого пользователя и подчинённых)
+    // + добавляем текущих начальников (чтобы их можно было видеть и удалять)
+    const sourceManagers = isInitial ? possibleManagers : availableManagers;
+    
+    // Создаём Map для избежания дублирования (по id)
+    const managersMap = new Map<number, Manager>();
+    
+    // Добавляем доступных менеджеров
+    sourceManagers.forEach(m => managersMap.set(m.id, m));
+    
+    // В режиме редактирования добавляем текущих начальников (если они не в availableManagers)
+    if (!isInitial) {
+      currentManagers.forEach(m => {
+        if (!managersMap.has(m.id)) {
+          managersMap.set(m.id, m);
+        }
+      });
+    }
+    
+    return Array.from(managersMap.values()).map((s) => ({
+      value: s.id,  // Используем id как value
+      label: `${s.username} — ${s.fullname || ""}`,
+      raw: s,
+    }));
+  }, [possibleManagers, availableManagers, currentManagers, isInitial]);
 
   // Search filter
   const filteredManagers = useMemo(() => {
@@ -356,14 +393,14 @@ export const FormEmpPage: React.FC = () => {
     if (!q) return managerOptions;
     return managerOptions.filter(
       (o) =>
-        o.value.toLowerCase().includes(q) ||
+        o.raw.username.toLowerCase().includes(q) ||
         (o.raw.fullname || "").toLowerCase().includes(q)
     );
   }, [searchTerm, managerOptions]);
 
-  const handleSelectManager = (name: string) => {
+  const handleSelectManager = (id: number) => {
     setSelectedManagers((prev) =>
-      prev.includes(name) ? prev.filter((m) => m !== name) : [...prev, name]
+      prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
     );
   };
 
@@ -387,8 +424,13 @@ export const FormEmpPage: React.FC = () => {
     const originalScheduleJson = JSON.stringify(originalSchedule);
     if (currentScheduleJson !== originalScheduleJson) return true;
 
+    // Сравниваем начальников (по ID)
+    const sortedSelected = [...selectedManagers].sort((a, b) => a - b);
+    const sortedOriginal = [...originalManagers].sort((a, b) => a - b);
+    if (JSON.stringify(sortedSelected) !== JSON.stringify(sortedOriginal)) return true;
+
     return false;
-  }, [isInitial, answers, schedule, originalAnswers, originalSchedule, questionCategories]);
+  }, [isInitial, answers, schedule, originalAnswers, originalSchedule, questionCategories, selectedManagers, originalManagers]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     if (submittingRef.current) {
@@ -413,8 +455,8 @@ export const FormEmpPage: React.FC = () => {
       return;
     }
 
-    // Валидация начальников только при регистрации
-    if (isInitial && selectedManagers.length === 0) {
+    // Валидация начальников
+    if (selectedManagers.length === 0) {
       setMgrError("Укажите хотя бы одного начальника");
       submittingRef.current = false;
       setSubmitting(false);
@@ -520,14 +562,17 @@ export const FormEmpPage: React.FC = () => {
           }))
         }));
 
-        // Получаем username начальников для рассылки подтверждений
-        const managerUsernames = currentManagers.map(m => m.username);
+        // Формируем списки ID начальников (для уведомлений и для обновления связей)
+        // Все ID начальники для уведомлений = старые + новые (уникальные)
+        const allManagerIdsForNotifications = [...new Set([...originalManagers, ...selectedManagers])];
 
         const payload = {
           company_id: companyId,
           actor_username: actorUsername,
           user_tg_id: userTgId,
-          managers: managerUsernames,  // начальники из исходной анкеты
+          manager_ids: allManagerIdsForNotifications,  // ID всех начальников для уведомлений
+          old_manager_ids: originalManagers,  // ID старых начальников
+          new_manager_ids: selectedManagers,  // ID новых начальников
           old_answers: oldAnswers,
           new_answers: newAnswers,
           old_schedule: JSON.stringify(oldSchedulePayload || []),
@@ -627,6 +672,27 @@ export const FormEmpPage: React.FC = () => {
     // Проверяем, изменилось ли расписание
     const scheduleChanged = JSON.stringify(pendingOldSchedule) !== JSON.stringify(pendingNewSchedule);
 
+    // Проверяем, изменились ли начальники (по ID)
+    const oldMgrs = pendingOldManagers || [];
+    const newMgrs = pendingNewManagers || [];
+    const oldMgrIds = oldMgrs.map(m => m.id).sort((a, b) => a - b);
+    const newMgrIds = newMgrs.map(m => m.id).sort((a, b) => a - b);
+    const managersChanged = JSON.stringify(oldMgrIds) !== JSON.stringify(newMgrIds);
+    
+    // Собираем всех уникальных начальников (по id)
+    const allPendingManagersMap = new Map<number, Manager>();
+    oldMgrs.forEach(m => allPendingManagersMap.set(m.id, m));
+    newMgrs.forEach(m => allPendingManagersMap.set(m.id, m));
+    const allPendingManagers = Array.from(allPendingManagersMap.values());
+    
+    const getManagerStatus = (managerId: number): "unchanged" | "added" | "deleted" => {
+      const inOld = oldMgrs.some(m => m.id === managerId);
+      const inNew = newMgrs.some(m => m.id === managerId);
+      if (inOld && inNew) return "unchanged";
+      if (!inOld && inNew) return "added";
+      return "deleted";
+    };
+
     return (
       <div className="form-page">
         <div className="form-container">
@@ -638,17 +704,28 @@ export const FormEmpPage: React.FC = () => {
             </p>
           </div>
 
-          {/* Начальники (readonly) */}
+          {/* Начальники с отображением изменений */}
           <div className="question-block">
-            <label>Ваши начальники</label>
+            <label>
+              Ваши начальники
+              {managersChanged && <span className="changed-badge"> (изменено)</span>}
+            </label>
             <div className="managers-readonly">
-              {currentManagers.length > 0 ? (
+              {allPendingManagers.length > 0 ? (
                 <ul className="managers-list">
-                  {currentManagers.map((m) => (
-                    <li key={m.username}>
-                      {m.username} {m.fullname ? `— ${m.fullname}` : ""}
-                    </li>
-                  ))}
+                  {allPendingManagers.map((manager) => {
+                    const status = getManagerStatus(manager.id);
+                    const statusClass = status === "added" ? "manager-pending-added" : 
+                                        status === "deleted" ? "manager-pending-deleted" : "";
+                    
+                    return (
+                      <li key={manager.id} className={statusClass}>
+                        {manager.username} {manager.fullname ? `— ${manager.fullname}` : ""}
+                        {status === "added" && <span className="added-badge"> (добавлен)</span>}
+                        {status === "deleted" && <span className="deleted-badge"> (удалён)</span>}
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <p style={{ color: "#888" }}>Начальники не указаны</p>
@@ -765,74 +842,65 @@ export const FormEmpPage: React.FC = () => {
               }
             </label>
 
-            {isInitial ? (
-              // Режим регистрации - выбор начальников
-              <>
-                <input
-                  type="text"
-                  placeholder="Начните вводить ФИО или @ник..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
+            {/* Выбор начальников (и в регистрации, и в редактировании) */}
+            <>
+              <input
+                type="text"
+                placeholder="Начните вводить ФИО или @ник..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
 
-                {managersLoading && <div>Загрузка списка сотрудников...</div>}
-                {managersFetchError && <div style={{ color: "crimson" }}>Ошибка: {managersFetchError}</div>}
+              {managersLoading && <div>Загрузка списка сотрудников...</div>}
+              {managersFetchError && <div style={{ color: "crimson" }}>Ошибка: {managersFetchError}</div>}
 
-                {searchTerm && (
-                  <div className="custom-select">
-                    {filteredManagers.length > 0 ? (
-                      filteredManagers.map((o) => (
-                        <div
-                          key={o.value}
-                          className={`option ${selectedManagers.includes(o.value) ? "selected" : ""}`}
-                          onClick={() => handleSelectManager(o.value)}
-                        >
-                          {o.label}
-                        </div>
-                      ))
-                    ) : (
-                      <p style={{ marginTop: 8, color: "#888" }}>Совпадений нет</p>
-                    )}
-                  </div>
-                )}
+              {searchTerm && (
+                <div className="custom-select">
+                  {filteredManagers.length > 0 ? (
+                    filteredManagers.map((o) => (
+                      <div
+                        key={o.value}
+                        className={`option ${selectedManagers.includes(o.value) ? "selected" : ""}`}
+                        onClick={() => handleSelectManager(o.value)}
+                      >
+                        {o.label}
+                      </div>
+                    ))
+                  ) : (
+                    <p style={{ marginTop: 8, color: "#888" }}>Совпадений нет</p>
+                  )}
+                </div>
+              )}
 
-                {selectedManagers.length > 0 && (
-                  <div className="selected-list">
-                    <h4>Выбранные начальники:</h4>
-                    <ul>
-                      {selectedManagers.map((m) => (
-                        <li key={m}>
-                          {m}{" "}
+              {selectedManagers.length > 0 && (
+                <div className="selected-list">
+                  <h4>{isInitial ? "Выбранные начальники:" : "Ваши начальники:"}</h4>
+                  <ul>
+                    {selectedManagers.map((managerId) => {
+                      // Находим менеджера по id для отображения
+                      const manager = managerOptions.find(o => o.value === managerId);
+                      // В режиме редактирования определяем статус начальника
+                      const isAdded = !isInitial && !originalManagers.includes(managerId);
+                      const managerClass = isAdded ? "manager-added" : "";
+                      
+                      return (
+                        <li key={managerId} className={managerClass}>
+                          {manager?.label || `ID: ${managerId}`}{" "}
                           <button
                             type="button"
                             onClick={() =>
-                              setSelectedManagers((prev) => prev.filter((x) => x !== m))
+                              setSelectedManagers((prev) => prev.filter((x) => x !== managerId))
                             }
                           >
                             ✖
                           </button>
                         </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </>
-            ) : (
-              // Режим редактирования - readonly список начальников
-              <div className="managers-readonly">
-                {currentManagers.length > 0 ? (
-                  <ul className="managers-list">
-                    {currentManagers.map((m) => (
-                      <li key={m.username}>
-                        {m.username} {m.fullname ? `— ${m.fullname}` : ""}
-                      </li>
-                    ))}
+                      );
+                    })}
                   </ul>
-                ) : (
-                  <p style={{ color: "#888" }}>Начальники не указаны</p>
-                )}
-              </div>
-            )}
+                </div>
+              )}
+            </>
 
             {mgrError && (
               <div style={{ color: "crimson", marginTop: 6 }}>{mgrError}</div>
