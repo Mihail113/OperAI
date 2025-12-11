@@ -76,8 +76,7 @@ label {
 }
 
 input,
-select,
-textarea {
+select {
   width: 100%;
   padding: 12px 16px;
   margin-top: 0;
@@ -95,12 +94,27 @@ textarea {
   white-space: nowrap;
 }
 
+textarea {
+  width: 100%;
+  padding: 12px 16px;
+  margin-top: 0;
+  margin-bottom: 0;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 16px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  background: #fff;
+  box-sizing: border-box;
+  min-height: 48px;
+}
+
 input[type="datetime-local"] {
   display: block;        /* чтобы занять всю строку предсказуемо */
   max-width: 100%;       /* не шире контейнера */
   white-space: normal;   /* разрешить сжатие */
   text-overflow: clip;   /* без искусственного эллипсиса */
   -webkit-appearance: none; /* опционально, если iOS растягивает контрол */
+  appearance: none;
 }
 
 input:focus,
@@ -111,7 +125,20 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(64, 208, 176, 0.2);
 }
 
-textarea {
+/* Стили для textarea с поддержкой auto-resize */
+textarea.auto-resize,
+.child-row textarea,
+.question-block textarea {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: hidden;
+  resize: none;
+  min-height: 48px;
+  line-height: 1.4;
+}
+
+/* Обычный textarea (не auto-resize) */
+textarea:not(.auto-resize):not(.child-row textarea):not(.question-block textarea) {
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow: auto;
