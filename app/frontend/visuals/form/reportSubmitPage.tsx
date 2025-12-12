@@ -57,6 +57,7 @@ export const ReportSubmitPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [period, setPeriod] = useState<string>("");
   const [actorUsername, setActorUsername] = useState<string>("");
+  const [fullName, setFullName] = useState<string | null>(null);
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp;
@@ -78,7 +79,8 @@ export const ReportSubmitPage: React.FC = () => {
     setLoading(true);
     setError(null);
     
-    fetch(`${API_URL}/get_report_form_questions?username=${encodeURIComponent(actorUsername)}&period=${encodeURIComponent(period)}`)
+    // include_full_name=true для получения полного имени вместе с вопросами
+    fetch(`${API_URL}/get_report_form_questions?username=${encodeURIComponent(actorUsername)}&period=${encodeURIComponent(period)}&include_full_name=true`)
       .then(async (res) => {
         if (!res.ok) {
           throw new Error("Ошибка загрузки вопросов");
@@ -92,6 +94,10 @@ export const ReportSubmitPage: React.FC = () => {
         } else {
           setQuestions([]);
           setAnswers([]);
+        }
+        // Сохраняем full_name из ответа
+        if (data.full_name) {
+          setFullName(data.full_name);
         }
       })
       .catch((err) => {
@@ -115,6 +121,7 @@ export const ReportSubmitPage: React.FC = () => {
 
     const tg = (window as any).Telegram?.WebApp;
     const username = tg?.initDataUnsafe?.user?.username;
+    const userId = tg?.initDataUnsafe?.user?.id;
     
     if (!username) {
       alert("Не удалось определить пользователя");
@@ -128,13 +135,19 @@ export const ReportSubmitPage: React.FC = () => {
       answersObj[String(i)] = answers[i] || "";
     });
 
+    // Формируем объект вопросов для отправки
+    const questionsObj: Record<string, string> = {};
+    questions.forEach((q, i) => {
+      questionsObj[String(i)] = q;
+    });
+
     try {
       const resp = await fetch(
         `${API_URL}/submit_report_answers?actor_username=${encodeURIComponent(username)}&period=${encodeURIComponent(period)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ answers: answersObj }),
+          body: JSON.stringify({ answers: answersObj, questions: questionsObj, user_tg_id: userId, full_name: fullName }),
         }
       );
 
