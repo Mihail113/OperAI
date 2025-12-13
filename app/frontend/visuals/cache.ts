@@ -41,6 +41,29 @@ export interface SubordinatesData {
   subordinates: Subordinate[];
 }
 
+export interface Task {
+  id: number;
+  assignee_id: number;
+  assigner_id: number;
+  assigner_username: string;
+  assigner_fullname: string;
+  assignee_username?: string;
+  assignee_fullname?: string;
+  description: string;
+  time: string;          // ISO формат даты и времени
+  duration: number;      // продолжительность в минутах
+  created_at?: string;
+}
+
+export interface TaskDraft {
+  subordinateId: number;
+  subordinateUsername: string;
+  subordinateFullname: string;
+  time: string;          // ISO формат даты и времени
+  duration: string;      // строка для input
+  description: string;
+}
+
 // --- Cache Storage ---
 // Schedule cache: userId -> ScheduleDay[]
 const scheduleCache = new Map<number, ScheduleDay[]>();
@@ -53,6 +76,12 @@ const creatorMeetingsCache = new Map<number, Meeting[]>();
 
 // Subordinates cache: username -> { managerId, subordinates }
 let subordinatesCache: { username: string; data: SubordinatesData } | null = null;
+
+// Month tasks cache: "task-userId-year-month" -> Task[]
+const monthTasksCache = new Map<string, Task[]>();
+
+// Task draft cache: subordinateId -> TaskDraft
+const taskDraftCache = new Map<number, TaskDraft>();
 
 // --- Subordinates Cache (shared between meetings and calendar pages) ---
 export const getSubordinatesFromCache = (username: string): SubordinatesData | undefined => {
@@ -238,6 +267,8 @@ export const clearAllCaches = (): void => {
   creatorMeetingsCache.clear();
   subordinatesCache = null;
   freeWindowsCache.clear();
+  monthTasksCache.clear();
+  taskDraftCache.clear();
 };
 
 // --- Free Windows Cache (for conflict resolution) ---
@@ -259,11 +290,26 @@ export interface MeetingDraft {
   origTime?: string;
 }
 
+// Черновик задания для режима свободных окон
+export interface TaskDraftForWindows {
+  subordinateId: number;
+  subordinateUsername: string;
+  subordinateFullname: string;
+  time: string;
+  duration: number;
+  description: string;
+  managerId: number;
+  managerUsername: string;
+}
+
 export interface FreeWindowsData {
   windows: ScheduleDay[];                    // Пересечённое расписание (7 дней)
   meetings: Record<number, Meeting[]>;       // Все встречи участников по worker_id
+  tasks?: Record<number, Task[]>;            // Все задания участников по worker_id (для режима заданий)
   meetingDraft: MeetingDraft;                // Черновик встречи
+  taskDraft?: TaskDraftForWindows;           // Черновик задания (для режима заданий)
   excludeMeetingId?: number | null;          // ID редактируемой встречи (исключить из расчёта окон)
+  type?: "meeting" | "task";                 // Тип режима свободных окон
 }
 
 // Ключ: JSON.stringify отсортированных memberIds
@@ -290,12 +336,17 @@ export const getFreeWindowsFromCache = (memberIds: number[]): FreeWindowsData | 
     meetings: Object.fromEntries(
       Object.entries(cached.meetings).map(([k, v]) => [k, [...v]])
     ),
+    tasks: cached.tasks ? Object.fromEntries(
+      Object.entries(cached.tasks).map(([k, v]) => [k, [...v]])
+    ) : undefined,
     meetingDraft: { 
       ...cached.meetingDraft, 
       memberIds: [...cached.meetingDraft.memberIds],
       origMemberIds: cached.meetingDraft.origMemberIds ? [...cached.meetingDraft.origMemberIds] : undefined
     },
+    taskDraft: cached.taskDraft ? { ...cached.taskDraft } : undefined,
     excludeMeetingId: cached.excludeMeetingId,
+    type: cached.type,
   };
 };
 
@@ -310,12 +361,17 @@ export const setFreeWindowsToCache = (memberIds: number[], data: FreeWindowsData
     meetings: Object.fromEntries(
       Object.entries(data.meetings).map(([k, v]) => [k, [...v]])
     ),
+    tasks: data.tasks ? Object.fromEntries(
+      Object.entries(data.tasks).map(([k, v]) => [k, [...v]])
+    ) : undefined,
     meetingDraft: { 
       ...data.meetingDraft, 
       memberIds: [...data.meetingDraft.memberIds],
       origMemberIds: data.meetingDraft.origMemberIds ? [...data.meetingDraft.origMemberIds] : undefined
     },
+    taskDraft: data.taskDraft ? { ...data.taskDraft } : undefined,
     excludeMeetingId: data.excludeMeetingId,  // Сохраняем ID встречи для исключения из расчёта окон
+    type: data.type,
   });
 };
 
@@ -341,6 +397,35 @@ export const subtractMeetingFromFreeWindowsCache = (memberIds: number[], meeting
     } else {
       cached.meetings[memberId] = [meeting];
     }
+  }
+};
+
+/**
+ * Добавляет созданное задание в кэш свободных окон.
+ * Это нужно, чтобы при повторном заходе в режим свободных окон
+ * время, занятое заданием, не отображалось как свободное.
+ */
+export const addTaskToFreeWindowsCache = (assigneeId: number, task: Task): void => {
+  const key = getFreeWindowsCacheKey([assigneeId]);
+  const cached = freeWindowsCache.get(key);
+  if (!cached) return;
+  
+  // Инициализируем tasks, если не было
+  if (!cached.tasks) {
+    cached.tasks = {};
+  }
+  
+  // Добавляем или обновляем задание у исполнителя
+  const assigneeTasks = cached.tasks[assigneeId];
+  if (assigneeTasks) {
+    const idx = assigneeTasks.findIndex(t => t.id === task.id);
+    if (idx !== -1) {
+      assigneeTasks[idx] = task; // Обновляем существующее задание
+    } else {
+      assigneeTasks.push(task);
+    }
+  } else {
+    cached.tasks[assigneeId] = [task];
   }
 };
 
@@ -389,12 +474,17 @@ export const getFreeWindowsByKey = (key: string): FreeWindowsData | undefined =>
     meetings: Object.fromEntries(
       Object.entries(cached.meetings).map(([k, v]) => [k, [...v]])
     ),
+    tasks: cached.tasks ? Object.fromEntries(
+      Object.entries(cached.tasks).map(([k, v]) => [k, [...v]])
+    ) : undefined,
     meetingDraft: { 
       ...cached.meetingDraft, 
       memberIds: [...cached.meetingDraft.memberIds],
       origMemberIds: cached.meetingDraft.origMemberIds ? [...cached.meetingDraft.origMemberIds] : undefined
     },
+    taskDraft: cached.taskDraft ? { ...cached.taskDraft } : undefined,
     excludeMeetingId: cached.excludeMeetingId,  // ID редактируемой встречи для исключения
+    type: cached.type,
   };
 };
 
@@ -434,5 +524,70 @@ export const getMeetingFormDraft = (): MeetingFormDraft | null => {
 
 export const clearMeetingFormDraft = (): void => {
   meetingFormDraftCache = null;
+};
+
+
+// --- Tasks Cache (для отображения заданий в календаре) ---
+
+export const getMonthTasksCacheKey = (userId: number, year: number, month: number): string => {
+  return `task-${userId}-${year}-${month}`;
+};
+
+export const getMonthTasksFromCache = (userId: number, year: number, month: number): Task[] | undefined => {
+  const key = getMonthTasksCacheKey(userId, year, month);
+  const cached = monthTasksCache.get(key);
+  return cached ? [...cached] : undefined;
+};
+
+export const setMonthTasksToCache = (userId: number, year: number, month: number, tasks: Task[]): void => {
+  const key = getMonthTasksCacheKey(userId, year, month);
+  monthTasksCache.set(key, [...tasks]);
+};
+
+// Добавить задание в кэш месяца (после создания)
+export const addTaskToMonthCache = (userId: number, task: Task): boolean => {
+  const date = new Date(task.time);
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const key = getMonthTasksCacheKey(userId, year, month);
+  const cached = monthTasksCache.get(key);
+  
+  if (!cached) return false;
+  
+  // Проверяем, нет ли уже такого задания
+  if (!cached.some(t => t.id === task.id)) {
+    cached.push(task);
+  }
+  return true;
+};
+
+// Инвалидация кэша заданий для пользователя
+export const invalidateMonthTasksCacheForUser = (userId: number): void => {
+  for (const key of monthTasksCache.keys()) {
+    if (key.startsWith(`task-${userId}-`)) {
+      monthTasksCache.delete(key);
+    }
+  }
+};
+
+
+// --- Task Form Draft Cache (для сохранения формы задания при переходе в календарь) ---
+
+export const getTaskDraftFromCache = (subordinateId: number): TaskDraft | undefined => {
+  const cached = taskDraftCache.get(subordinateId);
+  return cached ? { ...cached } : undefined;
+};
+
+export const setTaskDraftToCache = (subordinateId: number, draft: TaskDraft): void => {
+  taskDraftCache.set(subordinateId, { ...draft });
+};
+
+export const clearTaskDraftFromCache = (subordinateId: number): void => {
+  taskDraftCache.delete(subordinateId);
+};
+
+// Очистить все черновики заданий
+export const clearAllTaskDrafts = (): void => {
+  taskDraftCache.clear();
 };
 

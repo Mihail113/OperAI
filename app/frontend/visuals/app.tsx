@@ -6,13 +6,14 @@ import { FormMeetPage } from "./form/formMeetPage";
 import { FormCalPage } from "./form/formCalPage";
 import { ReportFormDirPage } from "./form/reportFormDirPage";
 import { ReportSubmitPage } from "./form/reportSubmitPage";
+import { FormTaskPage } from "./form/formTaskPage";
 
 const App: React.FC = () => {
   // Всегда стартуем со стартовой страницы
   const [path, setPath] = useState("/");
 
   // Список допустимых маршрутов (включи сюда новые страницы)
-  const allowedPaths = ["/", "/form1", "/form2", "/form3", "/form4", "/meetings", "/calendar", "/report_form", "/report_submit"];
+  const allowedPaths = ["/", "/form1", "/form2", "/form3", "/form4", "/meetings", "/calendar", "/task", "/report_form", "/report_submit"];
 
   useEffect(() => {
     const getInitialPath = () => {
@@ -52,6 +53,7 @@ const App: React.FC = () => {
   if (path === "/form4") return <FormEmpPage />;  // Редактирование профиля работника (та же форма, но без company_id в URL)
   if (path === "/meetings") return <FormMeetPage />;
   if (path === "/calendar") return <FormCalPage/>;
+  if (path === "/task") return <FormTaskPage />;  // Создание задания
   if (path === "/report_form") return <ReportFormDirPage />;  // Форма отчетности для директора
   if (path === "/report_submit") return <ReportSubmitPage />;  // Отправка отчета для сотрудника
 

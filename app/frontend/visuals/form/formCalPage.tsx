@@ -5,10 +5,13 @@ import {
   ScheduleInterval,
   Meeting,
   Subordinate,
+  Task,
   getScheduleFromCache,
   setScheduleToCache,
   getMonthMeetingsFromCache,
   setMonthMeetingsToCache,
+  getMonthTasksFromCache,
+  setMonthTasksToCache,
   getSubordinatesFromCache,
   setSubordinatesToCache,
   getFreeWindowsByKey,
@@ -46,6 +49,7 @@ export const FormCalPage: React.FC = () => {
 
   // --- Данные ---
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [schedule, setSchedule] = useState<ScheduleDay[]>([]);
 
   const [myUserId, setMyUserId] = useState<number | null>(null); // получение ID начальника
@@ -63,10 +67,13 @@ export const FormCalPage: React.FC = () => {
   // --- Попап встречи ---
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
 
+  // --- Попап задания ---
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+
   // --- Попап создания встречи (клик на время в календаре) ---
   const [createMeetingPopup, setCreateMeetingPopup] = useState<{
     hour: number;
-    participant: { username: string; fullname: string; id: number } | null;
+    participant: { username: string; fullname: string; id: number; isManager?: boolean } | null;
   } | null>(null);
 
   // --- Линия времени (Current Time Line) ---
@@ -245,15 +252,21 @@ export const FormCalPage: React.FC = () => {
     if (!myUserId) return;
 
     const targetId = selectedEmployee ? selectedEmployee.id : myUserId;
+    // Задания НЕ загружаются для начальников (у них isManager === true)
+    const isManagerSelected = selectedEmployee?.isManager === true;
 
     // Проверяем кэш (используем shared cache)
     const cachedSchedule = getScheduleFromCache(targetId);
     const cachedMeetings = getMonthMeetingsFromCache(targetId, year, month + 1);
+    // Для начальников задания не загружаем
+    const cachedTasks = isManagerSelected ? [] : getMonthTasksFromCache(targetId, year, month + 1);
 
     // Если всё есть в кэше - просто устанавливаем из кэша
-    if (cachedSchedule && cachedMeetings) {
+    const allCached = cachedSchedule && cachedMeetings && (isManagerSelected || cachedTasks !== undefined);
+    if (allCached) {
       setSchedule(cachedSchedule);
       setMeetings(cachedMeetings);
+      setTasks(cachedTasks || []);
       return;
     }
 
@@ -292,6 +305,23 @@ export const FormCalPage: React.FC = () => {
           );
         } else {
           setMeetings(cachedMeetings);
+        }
+
+        // Задания - загружаем для своего календаря и подчиненных (НЕ для начальников)
+        if (!isManagerSelected && cachedTasks === undefined) {
+          promises.push(
+            fetch(`${API_URL}/get_month_tasks?id=${targetId}&year=${year}&month=${month + 1}`)
+              .then(r => r.json())
+              .then(data => {
+                const tasksData = data.tasks || [];
+                setMonthTasksToCache(targetId, year, month + 1, tasksData);
+                setTasks(tasksData);
+              })
+          );
+        } else if (isManagerSelected) {
+          setTasks([]); // Для начальников задания не показываем
+        } else {
+          setTasks(cachedTasks || []);
         }
 
         await Promise.all(promises);
@@ -343,6 +373,28 @@ export const FormCalPage: React.FC = () => {
     });
   };
 
+  // Проверка: есть ли задания в этот день (включая многодневные)
+  const hasTasksForDate = (date: Date): boolean => {
+    const dateKey = formatDateKey(date);
+    const targetDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    
+    return tasks.some(t => {
+      if (!t.time) return false;
+      const taskStart = new Date(t.time);
+      const taskStartDate = new Date(taskStart.getFullYear(), taskStart.getMonth(), taskStart.getDate());
+      const taskStartMinutes = taskStart.getHours() * 60 + taskStart.getMinutes();
+      const duration = t.duration || 40;
+      
+      // Вычисляем дату окончания задания
+      const taskEndMs = taskStart.getTime() + duration * 60000;
+      const taskEnd = new Date(taskEndMs);
+      const taskEndDate = new Date(taskEnd.getFullYear(), taskEnd.getMonth(), taskEnd.getDate());
+      
+      // Проверяем, попадает ли дата в диапазон задания
+      return targetDate >= taskStartDate && targetDate <= taskEndDate;
+    });
+  };
+
   // Получение рабочих интервалов для дня (для timeline)
   const getWorkIntervalsForDate = (date: Date): ScheduleInterval[] => {
     const apiDay = jsToApiDay(date.getDay());
@@ -357,6 +409,204 @@ export const FormCalPage: React.FC = () => {
       if (!m.time) return false;
       return formatDateKey(new Date(m.time)) === dateKey;
     });
+  };
+
+  // Получение заданий для дня (для timeline) - базовая версия (только задания начинающиеся в этот день)
+  const getTasksForDate = (date: Date): Task[] => {
+    const dateKey = formatDateKey(date);
+    return tasks.filter(t => {
+      if (!t.time) return false;
+      return formatDateKey(new Date(t.time)) === dateKey;
+    });
+  };
+
+  // Интерфейс для сегмента задания (для многодневных заданий)
+  interface TaskSegment {
+    task: Task;
+    dayStartMinutes: number;  // 0 если продолжается с предыдущего дня
+    dayEndMinutes: number;    // 1440 если продолжается на следующий день
+    isStart: boolean;         // это первый день задания
+    isEnd: boolean;           // это последний день задания
+  }
+
+  // Получение сегментов заданий для дня (для timeline с поддержкой многодневных заданий)
+  const getTaskSegmentsForDate = (date: Date): TaskSegment[] => {
+    const targetDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const targetDateMs = targetDate.getTime();
+    const nextDayMs = targetDateMs + 24 * 60 * 60 * 1000;
+    const segments: TaskSegment[] = [];
+
+    for (const task of tasks) {
+      if (!task.time) continue;
+      
+      const taskStart = new Date(task.time);
+      const taskStartMs = taskStart.getTime();
+      const duration = task.duration || 40;
+      const taskEndMs = taskStartMs + duration * 60000;
+      
+      // Проверяем, пересекается ли задание с этим днём
+      // Задание пересекается, если: начало < конец дня И конец > начало дня
+      if (taskStartMs < nextDayMs && taskEndMs > targetDateMs) {
+        // Вычисляем границы сегмента для этого дня
+        const segmentStartMs = Math.max(taskStartMs, targetDateMs);
+        const segmentEndMs = Math.min(taskEndMs, nextDayMs);
+        
+        // Конвертируем в минуты от начала дня
+        const dayStartMinutes = Math.floor((segmentStartMs - targetDateMs) / 60000);
+        const dayEndMinutes = Math.floor((segmentEndMs - targetDateMs) / 60000);
+        
+        // Определяем, является ли этот сегмент началом/концом задания
+        const isStart = taskStartMs >= targetDateMs && taskStartMs < nextDayMs;
+        const isEnd = taskEndMs > targetDateMs && taskEndMs <= nextDayMs;
+        
+        segments.push({
+          task,
+          dayStartMinutes,
+          dayEndMinutes,
+          isStart,
+          isEnd
+        });
+      }
+    }
+
+    return segments;
+  };
+
+  // --- Хелперы для пересечений встреч и задач ---
+
+  // Интерфейс для информации о пересечении
+  interface OverlapInterval {
+    start: number;  // начало пересечения в минутах от начала дня
+    end: number;    // конец пересечения в минутах от начала дня
+  }
+
+  // Находит все интервалы пересечений между временным диапазоном и задачами
+  const findOverlapsWithTasks = (
+    itemStart: number,
+    itemEnd: number,
+    taskSegments: TaskSegment[]
+  ): OverlapInterval[] => {
+    const overlaps: OverlapInterval[] = [];
+    
+    for (const segment of taskSegments) {
+      // Проверяем пересечение: начало < конец другого И конец > начало другого
+      if (itemStart < segment.dayEndMinutes && itemEnd > segment.dayStartMinutes) {
+        overlaps.push({
+          start: Math.max(itemStart, segment.dayStartMinutes),
+          end: Math.min(itemEnd, segment.dayEndMinutes)
+        });
+      }
+    }
+    
+    // Объединяем перекрывающиеся интервалы
+    if (overlaps.length <= 1) return overlaps;
+    
+    overlaps.sort((a, b) => a.start - b.start);
+    const merged: OverlapInterval[] = [overlaps[0]];
+    
+    for (let i = 1; i < overlaps.length; i++) {
+      const last = merged[merged.length - 1];
+      if (overlaps[i].start <= last.end) {
+        last.end = Math.max(last.end, overlaps[i].end);
+      } else {
+        merged.push(overlaps[i]);
+      }
+    }
+    
+    return merged;
+  };
+
+  // Находит все интервалы пересечений между временным диапазоном и встречами
+  const findOverlapsWithMeetings = (
+    itemStart: number,
+    itemEnd: number,
+    meetings: Meeting[]
+  ): OverlapInterval[] => {
+    const overlaps: OverlapInterval[] = [];
+    
+    for (const meeting of meetings) {
+      if (!meeting.time) continue;
+      const meetingDate = new Date(meeting.time);
+      const meetingStart = meetingDate.getHours() * 60 + meetingDate.getMinutes();
+      const meetingEnd = meetingStart + (meeting.duration || 40);
+      
+      // Проверяем пересечение
+      if (itemStart < meetingEnd && itemEnd > meetingStart) {
+        overlaps.push({
+          start: Math.max(itemStart, meetingStart),
+          end: Math.min(itemEnd, meetingEnd)
+        });
+      }
+    }
+    
+    // Объединяем перекрывающиеся интервалы
+    if (overlaps.length <= 1) return overlaps;
+    
+    overlaps.sort((a, b) => a.start - b.start);
+    const merged: OverlapInterval[] = [overlaps[0]];
+    
+    for (let i = 1; i < overlaps.length; i++) {
+      const last = merged[merged.length - 1];
+      if (overlaps[i].start <= last.end) {
+        last.end = Math.max(last.end, overlaps[i].end);
+      } else {
+        merged.push(overlaps[i]);
+      }
+    }
+    
+    return merged;
+  };
+
+  // Интерфейс для визуального сегмента (часть элемента с определённой шириной)
+  interface VisualSegment {
+    startMinutes: number;
+    endMinutes: number;
+    isOverlap: boolean;  // true = 50% ширины, false = 100% ширины
+  }
+
+  // Разбивает временной диапазон на сегменты по зонам пересечения
+  const splitIntoVisualSegments = (
+    itemStart: number,
+    itemEnd: number,
+    overlaps: OverlapInterval[]
+  ): VisualSegment[] => {
+    if (overlaps.length === 0) {
+      return [{ startMinutes: itemStart, endMinutes: itemEnd, isOverlap: false }];
+    }
+
+    const segments: VisualSegment[] = [];
+    let currentPos = itemStart;
+
+    for (const overlap of overlaps) {
+      // Сегмент до пересечения (если есть)
+      if (currentPos < overlap.start) {
+        segments.push({
+          startMinutes: currentPos,
+          endMinutes: overlap.start,
+          isOverlap: false
+        });
+      }
+      
+      // Сегмент пересечения
+      segments.push({
+        startMinutes: overlap.start,
+        endMinutes: overlap.end,
+        isOverlap: true
+      });
+      
+      currentPos = overlap.end;
+    }
+
+    // Сегмент после последнего пересечения (если есть)
+    if (currentPos < itemEnd) {
+      segments.push({
+        startMinutes: currentPos,
+        endMinutes: itemEnd,
+        isOverlap: false
+      });
+    }
+
+    return segments;
   };
 
   // --- Хелперы для режима свободных окон ---
@@ -385,6 +635,25 @@ export const FormCalPage: React.FC = () => {
     return allMeetings;
   };
 
+  // Получение всех заданий участников для конкретной даты из кэша окон
+  const getFreeWindowsTasksForDate = (date: Date): Task[] => {
+    if (!freeWindowsData || !freeWindowsData.tasks) return [];
+    const dateKey = formatDateKey(date);
+    const allTasks: Task[] = [];
+    
+    for (const tasksList of Object.values(freeWindowsData.tasks)) {
+      for (const t of tasksList) {
+        if (t.time && formatDateKey(new Date(t.time)) === dateKey) {
+          // Проверка на дубликаты
+          if (!allTasks.some(existing => existing.id === t.id)) {
+            allTasks.push(t);
+          }
+        }
+      }
+    }
+    return allTasks;
+  };
+
   // Получение пересечённого расписания для дня недели из кэша окон
   const getFreeWindowsScheduleForDate = (date: Date): ScheduleInterval[] => {
     if (!freeWindowsData) return [];
@@ -397,16 +666,27 @@ export const FormCalPage: React.FC = () => {
   const computeFreeWindowsForDate = (date: Date, minDuration: number): FreeWindowSlot[] => {
     const scheduleIntervals = getFreeWindowsScheduleForDate(date);
     const dayMeetings = getFreeWindowsMeetingsForDate(date);
+    const dayTasks = getFreeWindowsTasksForDate(date);
     
     if (scheduleIntervals.length === 0) return [];
 
     // Собираем занятые интервалы из встреч
-    const busySlots: { start: number; end: number }[] = dayMeetings.map(m => {
+    const meetingSlots: { start: number; end: number }[] = dayMeetings.map(m => {
       const meetingDate = new Date(m.time);
       const startMinutes = meetingDate.getHours() * 60 + meetingDate.getMinutes();
       const duration = m.duration || 40;
       return { start: startMinutes, end: startMinutes + duration };
-    }).sort((a, b) => a.start - b.start);
+    });
+    
+    // Собираем занятые интервалы из заданий
+    const taskSlots: { start: number; end: number }[] = dayTasks.map(t => {
+      const taskDate = new Date(t.time);
+      const startMinutes = taskDate.getHours() * 60 + taskDate.getMinutes();
+      return { start: startMinutes, end: startMinutes + t.duration };
+    });
+    
+    // Объединяем и сортируем все занятые слоты
+    const busySlots = [...meetingSlots, ...taskSlots].sort((a, b) => a.start - b.start);
 
     const freeSlots: FreeWindowSlot[] = [];
 
@@ -496,7 +776,7 @@ export const FormCalPage: React.FC = () => {
   const handleSelectFreeWindow = (slot: FreeWindowSlot) => {
     if (!freeWindowsData || !freeWindowsKey) return;
     
-    // Формируем время начала встречи в формате datetime-local
+    // Формируем время начала в формате datetime-local
     const y = slot.date.getFullYear();
     const m = String(slot.date.getMonth() + 1).padStart(2, "0");
     const d = String(slot.date.getDate()).padStart(2, "0");
@@ -505,7 +785,22 @@ export const FormCalPage: React.FC = () => {
     // Выходим из режима окон
     setActiveFreeWindowsKey(null);
     
-    // Переходим на страницу встреч с параметрами
+    // Для режима заданий переходим в форму задания
+    if (freeWindowsData.type === "task" && freeWindowsData.taskDraft) {
+      const draft = freeWindowsData.taskDraft;
+      const params = new URLSearchParams({
+        subordinateId: String(draft.subordinateId),
+        subordinateUsername: draft.subordinateUsername,
+        subordinateFullname: draft.subordinateFullname,
+        date: `${y}-${m}-${d}`,
+        hour: slot.start.split(":")[0],
+        selectedTime: selectedTime,
+      });
+      window.location.hash = `#/task?${params.toString()}`;
+      return;
+    }
+    
+    // Для режима встреч переходим на страницу встреч с параметрами
     window.location.hash = `#/meetings?windowStart=${slot.start}&windowEnd=${slot.end}&restoreKey=${encodeURIComponent(freeWindowsKey)}&selectedTime=${encodeURIComponent(selectedTime)}`;
   };
 
@@ -521,6 +816,23 @@ export const FormCalPage: React.FC = () => {
       window.location.hash = `#/meetings?restoreKey=${encodeURIComponent(freeWindowsKey)}`;
     } else {
       window.location.hash = "#/meetings?restoreFormDraft=1";
+    }
+  };
+
+  // Переход к форме задания (для режима свободных окон type=task)
+  const handleGoToTask = () => {
+    if (freeWindowsMode && freeWindowsData?.taskDraft) {
+      const draft = freeWindowsData.taskDraft;
+      // Переходим в форму задания с восстановлением данных
+      const params = new URLSearchParams({
+        subordinateId: String(draft.subordinateId),
+        subordinateUsername: draft.subordinateUsername,
+        subordinateFullname: draft.subordinateFullname,
+        restoreFromWindows: "1",
+      });
+      window.location.hash = `#/task?${params.toString()}`;
+    } else {
+      window.location.hash = "#/calendar";
     }
   };
 
@@ -550,7 +862,7 @@ export const FormCalPage: React.FC = () => {
           {/* Информация о режиме */}
           <div style={{padding: '12px 16px', background: '#C8E6C9', borderBottom: '1px solid #A5D6A7'}}>
             <span style={{fontSize: '13px', color: '#1B5E20'}}>
-              Выберите свободное окно для встречи ({freeWindowsDuration} мин.)
+              Выберите свободное окно для {freeWindowsData?.type === "task" ? "задания" : "встречи"} ({freeWindowsDuration} мин.)
             </span>
           </div>
 
@@ -636,10 +948,11 @@ export const FormCalPage: React.FC = () => {
     }
 
     // Обычный режим
-    // Для начальников скрываем расписание и встречи (данные загружены для расчёта окон, но не отображаются)
+    // Для начальников скрываем расписание, встречи и задания (данные загружены для расчёта окон, но не отображаются)
     const isManagerSelected = selectedEmployee?.isManager === true;
     const workIntervals = isManagerSelected ? [] : getWorkIntervalsForDate(selectedDate);
     const dayMeetings = isManagerSelected ? [] : getMeetingsForDate(selectedDate);
+    const dayTaskSegments = isManagerSelected ? [] : getTaskSegmentsForDate(selectedDate);
 
     return (
       <div style={{flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
@@ -693,7 +1006,8 @@ export const FormCalPage: React.FC = () => {
                     participant: selectedEmployee ? {
                       username: selectedEmployee.username,
                       fullname: selectedEmployee.fullname,
-                      id: selectedEmployee.id
+                      id: selectedEmployee.id,
+                      isManager: selectedEmployee.isManager
                     } : null
                   });
                 }}
@@ -753,62 +1067,220 @@ export const FormCalPage: React.FC = () => {
             </div>
           )}
 
-          {/* Встречи - синие блоки (z-index: 2, над рабочими часами) - скрыты для начальников */}
+          {/* Встречи - синие блоки (z-index зависит от времени начала: позже = выше) - скрыты для начальников */}
           {dayMeetings.map((meeting) => {
             if (!meeting.time) return null;
             const meetingDate = new Date(meeting.time);
-            const startMinutes = meetingDate.getHours() * 60 + meetingDate.getMinutes();
-            const top = (startMinutes / 60) * HOUR_HEIGHT + 10;
-            const duration = meeting.duration || 40; // По умолчанию 40 минут
-            const height = (duration / 60) * HOUR_HEIGHT;
+            const meetingStartMinutes = meetingDate.getHours() * 60 + meetingDate.getMinutes();
+            const duration = meeting.duration || 40;
+            const meetingEndMinutes = meetingStartMinutes + duration;
+            // z-index: базовый 2 + смещение по времени (позже начинается = выше отображается)
+            const meetingZIndex = 2 + meetingStartMinutes;
 
-            return (
-              <div 
-                key={`meeting-${meeting.id}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedMeeting(meeting);
-                }}
-                style={{
-                  position: 'absolute',
-                  top: `${top}px`,
-                  left: '60px',
-                  right: '10px',
-                  height: `${height}px`,
-                  minHeight: '2px',
-                  background: '#E3F2FD',
-                  borderLeft: '4px solid #2196F3',
-                  borderRadius: '4px',
-                  padding: '4px 8px',
-                  overflow: 'hidden',
-                  fontSize: '12px',
-                  zIndex: 2,
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-                  cursor: 'pointer'
-                }}
-              >
-                <div style={{
-                  fontWeight: '600', 
-                  color: '#1565C0', 
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis'
-                }}>
-                  {meeting.topic}
-                </div>
-                {height >= 36 && (
-                  <div style={{
-                    color: '#1976D2', 
-                    fontSize: '11px',
-                    whiteSpace: 'nowrap',
+            // Находим пересечения с задачами и разбиваем на визуальные сегменты
+            const overlaps = findOverlapsWithTasks(meetingStartMinutes, meetingEndMinutes, dayTaskSegments);
+            const visualSegments = splitIntoVisualSegments(meetingStartMinutes, meetingEndMinutes, overlaps);
+            
+            // Общая высота встречи для определения, показывать ли подробности
+            const totalHeight = (duration / 60) * HOUR_HEIGHT;
+
+            return visualSegments.map((vs, segIdx) => {
+              const segmentTop = (vs.startMinutes / 60) * HOUR_HEIGHT + 10;
+              const segmentHeight = ((vs.endMinutes - vs.startMinutes) / 60) * HOUR_HEIGHT;
+              
+              // Для пересечения - левая половина (ширина = 50% - 35px), иначе полная ширина
+              // Левый отступ 60px, правый 10px. При 50/50: каждая часть = (100% - 70px) / 2 = 50% - 35px
+              const leftStyle = '60px';
+              const widthStyle = vs.isOverlap ? 'calc(50% - 35px)' : undefined;
+              const rightStyle = vs.isOverlap ? undefined : '10px';
+              
+              // Определяем borderRadius для сегмента (только верхние углы у первого, нижние у последнего)
+              const isFirstSegment = segIdx === 0;
+              const isLastSegment = segIdx === visualSegments.length - 1;
+              const borderRadius = isFirstSegment && isLastSegment 
+                ? '4px' 
+                : isFirstSegment 
+                  ? '4px 4px 0 0' 
+                  : isLastSegment 
+                    ? '0 0 4px 4px' 
+                    : '0';
+              
+              // Смещение текста: сколько пикселей от начала встречи до начала этого сегмента
+              const textOffsetMinutes = vs.startMinutes - meetingStartMinutes;
+              const textOffsetPx = (textOffsetMinutes / 60) * HOUR_HEIGHT;
+              
+              // boxShadow только на первом сегменте чтобы не создавать визуальные полосы
+              const segmentBoxShadow = isFirstSegment ? '0 1px 3px rgba(0,0,0,0.1)' : 'none';
+
+              return (
+                <div 
+                  key={`meeting-${meeting.id}-seg-${segIdx}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedMeeting(meeting);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: `${segmentTop}px`,
+                    left: leftStyle,
+                    right: rightStyle,
+                    width: widthStyle,
+                    height: `${segmentHeight}px`,
+                    minHeight: '2px',
+                    background: '#E3F2FD',
+                    borderLeft: '4px solid #2196F3',
+                    borderRadius: borderRadius,
+                    padding: '0',
                     overflow: 'hidden',
-                    textOverflow: 'ellipsis'
+                    fontSize: '12px',
+                    zIndex: meetingZIndex,
+                    boxShadow: segmentBoxShadow,
+                    cursor: 'pointer',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  {/* Текстовый блок, смещённый вверх чтобы "течь" через сегменты */}
+                  <div style={{
+                    position: 'relative',
+                    top: `-${textOffsetPx}px`,
+                    height: `${totalHeight}px`,
+                    padding: '4px 8px',
+                    boxSizing: 'border-box'
                   }}>
-                    {meetingDate.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})} • {duration} мин
+                    <div style={{
+                      fontWeight: '600', 
+                      color: '#1565C0', 
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {meeting.topic}
+                    </div>
+                    {totalHeight >= 36 && (
+                      <div style={{
+                        color: '#1976D2', 
+                        fontSize: '11px',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {meetingDate.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})} • {duration} мин
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            );
+                </div>
+              );
+            });
+          })}
+
+          {/* Задания - красные блоки (z-index зависит от времени начала: позже = выше) */}
+          {dayTaskSegments.map((segment, taskIdx) => {
+            const { task, dayStartMinutes, dayEndMinutes, isStart, isEnd } = segment;
+            // z-index: базовый 2 + смещение по времени (позже начинается = выше отображается)
+            const taskZIndex = 2 + dayStartMinutes;
+            const taskDuration = dayEndMinutes - dayStartMinutes;
+            
+            // Форматируем время для отображения
+            const formatMinutes = (mins: number) => {
+              const h = Math.floor(mins / 60);
+              const m = mins % 60;
+              return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+            };
+
+            // Находим пересечения со встречами и разбиваем на визуальные сегменты
+            const overlaps = findOverlapsWithMeetings(dayStartMinutes, dayEndMinutes, dayMeetings);
+            const visualSegments = splitIntoVisualSegments(dayStartMinutes, dayEndMinutes, overlaps);
+            
+            // Общая высота задачи для определения, показывать ли подробности
+            const totalHeight = (taskDuration / 60) * HOUR_HEIGHT;
+
+            return visualSegments.map((vs, segIdx) => {
+              const segmentTop = (vs.startMinutes / 60) * HOUR_HEIGHT + 10;
+              const segmentHeight = ((vs.endMinutes - vs.startMinutes) / 60) * HOUR_HEIGHT;
+              
+              // Для пересечения - правая половина (от середины до правого края)
+              // Середина: 60px + (100% - 70px) / 2 = 50% + 25px
+              const leftStyle = vs.isOverlap ? 'calc(50% + 25px)' : '60px';
+              const rightStyle = '10px';
+              
+              // borderLeft для всех сегментов задачи
+              const showBorderLeft = true;
+              
+              // Определяем borderRadius с учётом многодневных заданий и визуальных сегментов
+              const isFirstVisualSegment = segIdx === 0;
+              const isLastVisualSegment = segIdx === visualSegments.length - 1;
+              
+              // Верхние углы скруглены если это начало задания И первый визуальный сегмент
+              const topRadius = (isStart && isFirstVisualSegment) ? '4px' : '0';
+              // Нижние углы скруглены если это конец задания И последний визуальный сегмент
+              const bottomRadius = (isEnd && isLastVisualSegment) ? '4px' : '0';
+              const borderRadius = `${topRadius} ${topRadius} ${bottomRadius} ${bottomRadius}`;
+              
+              // Смещение текста: сколько пикселей от начала задачи до начала этого сегмента
+              const textOffsetMinutes = vs.startMinutes - dayStartMinutes;
+              const textOffsetPx = (textOffsetMinutes / 60) * HOUR_HEIGHT;
+              
+              // boxShadow только на первом сегменте чтобы не создавать визуальные полосы
+              const segmentBoxShadow = isFirstVisualSegment ? '0 1px 3px rgba(0,0,0,0.1)' : 'none';
+
+              return (
+                <div 
+                  key={`task-${task.id}-${taskIdx}-seg-${segIdx}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedTask(task);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: `${segmentTop}px`,
+                    left: leftStyle,
+                    right: rightStyle,
+                    height: `${segmentHeight}px`,
+                    minHeight: '2px',
+                    background: '#FFEBEE',
+                    borderLeft: showBorderLeft ? '4px solid #F44336' : 'none',
+                    borderRadius: borderRadius,
+                    padding: '0',
+                    overflow: 'hidden',
+                    fontSize: '12px',
+                    zIndex: taskZIndex,
+                    boxShadow: segmentBoxShadow,
+                    cursor: 'pointer',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  {/* Текстовый блок, смещённый вверх чтобы "течь" через сегменты */}
+                  <div style={{
+                    position: 'relative',
+                    top: `-${textOffsetPx}px`,
+                    height: `${totalHeight}px`,
+                    padding: '4px 8px',
+                    boxSizing: 'border-box'
+                  }}>
+                    <div style={{
+                      fontWeight: '600', 
+                      color: '#C62828', 
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {!isStart && '↓ '}{task.description || 'Задание'}{!isEnd && ' →'}
+                    </div>
+                    {totalHeight >= 36 && (
+                      <div style={{
+                        color: '#D32F2F', 
+                        fontSize: '11px',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {formatMinutes(dayStartMinutes)} — {formatMinutes(dayEndMinutes)} ({taskDuration} мин)
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            });
           })}
 
         </div>
@@ -827,7 +1299,17 @@ export const FormCalPage: React.FC = () => {
 
   // Обработка выхода из режима свободных окон (кнопка "Отмена")
   const handleExitFreeWindowsMode = () => {
-    // Сохраняем данные встречи в meetingFormDraftCache перед выходом
+    // Для режима заданий - выходим в обычный календарь (кэш сохраняется)
+    if (freeWindowsData?.type === "task") {
+      setFreeWindowsMode(false);
+      setFreeWindowsKey(null);
+      setFreeWindowsData(null);
+      setActiveFreeWindowsKey(null);
+      window.location.hash = "#/calendar";
+      return;
+    }
+    
+    // Для режима встреч - сохраняем данные встречи в meetingFormDraftCache перед выходом
     if (freeWindowsData?.meetingDraft) {
       const draft = freeWindowsData.meetingDraft;
       saveMeetingFormDraft({
@@ -858,20 +1340,38 @@ export const FormCalPage: React.FC = () => {
       {freeWindowsMode ? (
         <>
           <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-            <button
-              onClick={handleGoToMeetings}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: '#007AFF',
-                fontSize: '14px',
-                cursor: 'pointer',
-                padding: 0,
-                fontWeight: 500,
-              }}
-            >
-              Встречи
-            </button>
+            {/* Кнопка возврата: Задание для type=task, Встречи для type=meeting */}
+            {freeWindowsData?.type === "task" ? (
+              <button
+                onClick={handleGoToTask}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#007AFF',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  padding: 0,
+                  fontWeight: 500,
+                }}
+              >
+                Задание
+              </button>
+            ) : (
+              <button
+                onClick={handleGoToMeetings}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#007AFF',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  padding: 0,
+                  fontWeight: 500,
+                }}
+              >
+                Встречи
+              </button>
+            )}
             <h2 style={{margin: 0, fontSize: '22px', fontWeight: '700', color: '#2E7D32'}}>Свободные окна</h2>
             <button
               onClick={handleExitFreeWindowsMode}
@@ -896,7 +1396,7 @@ export const FormCalPage: React.FC = () => {
             border: '1px solid #C8E6C9'
           }}>
             <p style={{margin: 0, color: '#1B5E20', fontSize: '14px'}}>
-              Выберите подходящее время для встречи длительностью {freeWindowsDuration} мин.
+              Выберите подходящее время для {freeWindowsData?.type === "task" ? "задания" : "встречи"} длительностью {freeWindowsDuration} мин.
               Зелёные точки показывают дни со свободными окнами.
             </p>
           </div>
@@ -1004,12 +1504,14 @@ export const FormCalPage: React.FC = () => {
              const isManagerSelected = selectedEmployee?.isManager === true;
              const hasSchedule = !isManagerSelected && hasScheduleForDate(dayDate);
              const hasMeetings = !isManagerSelected && hasMeetingsForDate(dayDate);
+             const hasTasks = !isManagerSelected && hasTasksForDate(dayDate);
              return (
                <div key={d} onClick={() => openDay(d)} style={{aspectRatio: '1', borderRadius: '10px', background: isToday ? '#40d0b0' : '#f5f5f5', color: isToday?'#fff':'#333', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer'}}>
                  <span style={{fontWeight: '600'}}>{d}</span>
                  <div style={{display: 'flex', gap: '3px', marginTop: '3px'}}>
                    {hasSchedule && <div style={{width: '5px', height: '5px', borderRadius: '50%', background: isToday ? 'rgba(255,255,255,0.7)' : '#9E9E9E'}}/>}
                    {hasMeetings && <div style={{width: '5px', height: '5px', borderRadius: '50%', background: isToday ? '#fff' : '#2196F3'}}/>}
+                   {hasTasks && <div style={{width: '5px', height: '5px', borderRadius: '50%', background: isToday ? '#FFCDD2' : '#F44336'}}/>}
                  </div>
                </div>
              )
@@ -1173,6 +1675,132 @@ export const FormCalPage: React.FC = () => {
         </div>
       )}
 
+      {/* TASK DETAIL POPUP */}
+      {selectedTask && (
+        <div 
+          style={{
+            position: 'fixed', 
+            top: 0, 
+            left: 0, 
+            right: 0, 
+            bottom: 0, 
+            background: 'rgba(0, 0, 0, 0.5)', 
+            zIndex: 10000, 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            padding: '60px 16px'
+          }}
+          onClick={() => setSelectedTask(null)}
+        >
+          <div 
+            style={{
+              background: '#fff',
+              borderRadius: '16px',
+              width: '100%',
+              maxWidth: '400px',
+              maxHeight: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid #FFCDD2',
+              background: '#FFEBEE',
+              borderRadius: '16px 16px 0 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              flexShrink: 0
+            }}>
+              <button 
+                onClick={() => setSelectedTask(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '20px',
+                  color: '#C62828',
+                  cursor: 'pointer',
+                  padding: 0,
+                  lineHeight: 1
+                }}
+              >
+                ✕
+              </button>
+              <span style={{fontWeight: '600', fontSize: '17px', color: '#C62828'}}>Задание</span>
+            </div>
+
+            {/* Scrollable Content */}
+            <div style={{
+              padding: '20px',
+              overflowY: 'auto',
+              flex: 1
+            }}>
+              {/* Description */}
+              <div style={{marginBottom: '20px'}}>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Описание</div>
+                <div style={{fontSize: '16px', fontWeight: '600', color: '#333'}}>{selectedTask.description || '—'}</div>
+              </div>
+
+              {/* Time */}
+              <div style={{marginBottom: '20px'}}>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Время</div>
+                <div style={{fontSize: '15px', color: '#333'}}>
+                  {selectedTask.time && (
+                    <>
+                      {new Date(selectedTask.time).toLocaleDateString('ru-RU', {
+                        day: 'numeric',
+                        month: 'long',
+                        year: 'numeric'
+                      })}
+                      <br />
+                      {new Date(selectedTask.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}
+                      {' — '}
+                      {getEndTime(selectedTask.time, selectedTask.duration || 40)}
+                      <span style={{color: '#888', marginLeft: '8px'}}>
+                        ({selectedTask.duration || 40} мин)
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Creator (Assigner) */}
+              <div style={{marginBottom: '20px'}}>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Создатель</div>
+                <div style={{fontSize: '15px', color: '#333'}}>{selectedTask.assigner_fullname || selectedTask.assigner_username || '—'}</div>
+              </div>
+
+              {/* Executor (Assignee) */}
+              <div style={{marginBottom: '20px'}}>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Исполнитель</div>
+                <div style={{fontSize: '15px', color: '#333'}}>{selectedTask.assignee_fullname || selectedTask.assignee_username || '—'}</div>
+              </div>
+
+              {/* Created At */}
+              {selectedTask.created_at && (
+                <div>
+                  <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Создано</div>
+                  <div style={{fontSize: '14px', color: '#666'}}>
+                    {new Date(selectedTask.created_at).toLocaleDateString('ru-RU', {
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* CREATE/RESCHEDULE MEETING POPUP */}
       {createMeetingPopup && selectedDate && (() => {
         // Получаем черновик для проверки режима редактирования
@@ -1223,7 +1851,11 @@ export const FormCalPage: React.FC = () => {
               onClick={(e) => e.stopPropagation()}
             >
               <h3 style={{margin: '0 0 16px 0', fontSize: '18px', fontWeight: '600', color: '#333', textAlign: 'center'}}>
-                {isEditMode ? 'Желаете перенести встречу?' : 'Желаете создать встречу?'}
+                {isEditMode 
+                  ? 'Желаете перенести встречу?' 
+                  : (createMeetingPopup.participant && createMeetingPopup.participant.isManager !== true
+                    ? 'Создать встречу или назначить задание?'
+                    : 'Желаете создать встречу?')}
               </h3>
               
               {/* В режиме редактирования показываем тему */}
@@ -1273,7 +1905,9 @@ export const FormCalPage: React.FC = () => {
 
               {createMeetingPopup.participant && (
                 <div style={{marginBottom: '16px', padding: '12px', background: '#E3F2FD', borderRadius: '10px'}}>
-                  <div style={{fontSize: '13px', color: '#1565C0', marginBottom: '4px'}}>И приглашенным участником</div>
+                  <div style={{fontSize: '13px', color: '#1565C0', marginBottom: '4px'}}>
+                    {createMeetingPopup.participant.isManager !== true && !isEditMode ? 'Сотрудник' : 'И приглашенным участником'}
+                  </div>
                   <div style={{fontSize: '15px', fontWeight: '600', color: '#1976D2'}}>
                     {createMeetingPopup.participant.username}
                   </div>
@@ -1283,76 +1917,185 @@ export const FormCalPage: React.FC = () => {
                 </div>
               )}
 
-              <div style={{display: 'flex', gap: '12px'}}>
-                <button
-                  onClick={() => setCreateMeetingPopup(null)}
-                  style={{
-                    flex: 1,
-                    padding: '14px',
-                    background: '#FFEBEE',
-                    color: '#C62828',
-                    border: 'none',
-                    borderRadius: '10px',
-                    fontSize: '16px',
-                    fontWeight: '600',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Нет
-                </button>
-                <button
-                  onClick={() => {
-                    // Формируем дату и время
-                    const y = selectedDate.getFullYear();
-                    const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
-                    const d = String(selectedDate.getDate()).padStart(2, '0');
-                    const hour = String(createMeetingPopup.hour).padStart(2, '0');
-                    const dateStr = `${y}-${m}-${d}`;
-                    
-                    // Получаем существующий черновик (если есть) и сохраняем его данные
-                    const existingDraft = getMeetingFormDraft();
-                    if (existingDraft) {
-                      // Сохраняем черновик с существующими данными (время перезапишется на странице встреч)
-                      saveMeetingFormDraft({
-                        topic: existingDraft.topic || '',
-                        memberIds: existingDraft.memberIds || [],
-                        time: existingDraft.time || '',
-                        duration: existingDraft.duration || '',
-                        link: existingDraft.link || '',
-                        editId: existingDraft.editId,
-                        origTopic: existingDraft.origTopic,
-                        origMemberIds: existingDraft.origMemberIds,
-                        origTime: existingDraft.origTime,
-                        origDuration: existingDraft.origDuration,
-                        origLink: existingDraft.origLink,
-                      });
-                    }
-                    
-                    // Формируем URL с параметрами
-                    let url = `#/meetings?quickCreate=1&date=${dateStr}&hour=${hour}`;
-                    if (createMeetingPopup.participant) {
-                      url += `&participantId=${createMeetingPopup.participant.id}`;
-                    }
-                    
-                    setCreateMeetingPopup(null);
-                    setShowModal(false);
-                    window.location.hash = url;
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: '14px',
-                    background: '#4CAF50',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '10px',
-                    fontSize: '16px',
-                    fontWeight: '600',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Да
-                </button>
-              </div>
+              {/* Определяем, показывать ли кнопку задания (только для подчиненных, не в режиме редактирования) */}
+              {(() => {
+                const canAssignTask = createMeetingPopup.participant && 
+                                      createMeetingPopup.participant.isManager !== true && 
+                                      !isEditMode;
+                
+                if (canAssignTask) {
+                  // 3 кнопки: Создать встречу, Назначить задание, Отмена
+                  return (
+                    <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
+                      <button
+                        onClick={() => {
+                          // Формируем дату и время для встречи
+                          const y = selectedDate.getFullYear();
+                          const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
+                          const d = String(selectedDate.getDate()).padStart(2, '0');
+                          const hour = String(createMeetingPopup.hour).padStart(2, '0');
+                          const dateStr = `${y}-${m}-${d}`;
+                          
+                          const existingDraft = getMeetingFormDraft();
+                          if (existingDraft) {
+                            saveMeetingFormDraft({
+                              topic: existingDraft.topic || '',
+                              memberIds: existingDraft.memberIds || [],
+                              time: existingDraft.time || '',
+                              duration: existingDraft.duration || '',
+                              link: existingDraft.link || '',
+                              editId: existingDraft.editId,
+                              origTopic: existingDraft.origTopic,
+                              origMemberIds: existingDraft.origMemberIds,
+                              origTime: existingDraft.origTime,
+                              origDuration: existingDraft.origDuration,
+                              origLink: existingDraft.origLink,
+                            });
+                          }
+                          
+                          let url = `#/meetings?quickCreate=1&date=${dateStr}&hour=${hour}`;
+                          if (createMeetingPopup.participant) {
+                            url += `&participantId=${createMeetingPopup.participant.id}`;
+                          }
+                          
+                          setCreateMeetingPopup(null);
+                          setShowModal(false);
+                          window.location.hash = url;
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '14px',
+                          background: '#007AFF',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '10px',
+                          fontSize: '16px',
+                          fontWeight: '600',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Создать встречу
+                      </button>
+                      <button
+                        onClick={() => {
+                          // Переход в режим создания задания
+                          const y = selectedDate.getFullYear();
+                          const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
+                          const d = String(selectedDate.getDate()).padStart(2, '0');
+                          const dateStr = `${y}-${m}-${d}`;
+                          const hour = createMeetingPopup.hour;
+                          
+                          const p = createMeetingPopup.participant!;
+                          const url = `#/task?subordinateId=${p.id}&subordinateUsername=${encodeURIComponent(p.username)}&subordinateFullname=${encodeURIComponent(p.fullname)}&date=${dateStr}&hour=${hour}`;
+                          
+                          setCreateMeetingPopup(null);
+                          setShowModal(false);
+                          window.location.hash = url;
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '14px',
+                          background: '#34C759',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '10px',
+                          fontSize: '16px',
+                          fontWeight: '600',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Назначить задание
+                      </button>
+                      <button
+                        onClick={() => setCreateMeetingPopup(null)}
+                        style={{
+                          width: '100%',
+                          padding: '14px',
+                          background: '#FF3B30',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '10px',
+                          fontSize: '16px',
+                          fontWeight: '600',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                  );
+                }
+                
+                // Обычные 2 кнопки (для начальников или режима редактирования)
+                return (
+                  <div style={{display: 'flex', gap: '12px'}}>
+                    <button
+                      onClick={() => setCreateMeetingPopup(null)}
+                      style={{
+                        flex: 1,
+                        padding: '14px',
+                        background: '#FFEBEE',
+                        color: '#C62828',
+                        border: 'none',
+                        borderRadius: '10px',
+                        fontSize: '16px',
+                        fontWeight: '600',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Нет
+                    </button>
+                    <button
+                      onClick={() => {
+                        const y = selectedDate.getFullYear();
+                        const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
+                        const d = String(selectedDate.getDate()).padStart(2, '0');
+                        const hour = String(createMeetingPopup.hour).padStart(2, '0');
+                        const dateStr = `${y}-${m}-${d}`;
+                        
+                        const existingDraft = getMeetingFormDraft();
+                        if (existingDraft) {
+                          saveMeetingFormDraft({
+                            topic: existingDraft.topic || '',
+                            memberIds: existingDraft.memberIds || [],
+                            time: existingDraft.time || '',
+                            duration: existingDraft.duration || '',
+                            link: existingDraft.link || '',
+                            editId: existingDraft.editId,
+                            origTopic: existingDraft.origTopic,
+                            origMemberIds: existingDraft.origMemberIds,
+                            origTime: existingDraft.origTime,
+                            origDuration: existingDraft.origDuration,
+                            origLink: existingDraft.origLink,
+                          });
+                        }
+                        
+                        let url = `#/meetings?quickCreate=1&date=${dateStr}&hour=${hour}`;
+                        if (createMeetingPopup.participant) {
+                          url += `&participantId=${createMeetingPopup.participant.id}`;
+                        }
+                        
+                        setCreateMeetingPopup(null);
+                        setShowModal(false);
+                        window.location.hash = url;
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: '14px',
+                        background: '#4CAF50',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: '10px',
+                        fontSize: '16px',
+                        fontWeight: '600',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Да
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         );
