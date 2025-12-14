@@ -16,9 +16,12 @@ import {
   setSubordinatesToCache,
   getFreeWindowsByKey,
   setActiveFreeWindowsKey,
+  setFreeWindowsToCache,
   FreeWindowsData,
   saveMeetingFormDraft,
   getMeetingFormDraft,
+  saveTaskFormDraft,
+  getTaskFormDraft,
 } from "../cache";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
@@ -640,9 +643,13 @@ export const FormCalPage: React.FC = () => {
     if (!freeWindowsData || !freeWindowsData.tasks) return [];
     const dateKey = formatDateKey(date);
     const allTasks: Task[] = [];
+    const excludeId = freeWindowsData.excludeTaskId;
     
     for (const tasksList of Object.values(freeWindowsData.tasks)) {
       for (const t of tasksList) {
+        // Пропускаем редактируемое задание — его старое время не занято
+        if (excludeId != null && t.id != null && String(t.id) === String(excludeId)) continue;
+        
         if (t.time && formatDateKey(new Date(t.time)) === dateKey) {
           // Проверка на дубликаты
           if (!allTasks.some(existing => existing.id === t.id)) {
@@ -787,16 +794,16 @@ export const FormCalPage: React.FC = () => {
     
     // Для режима заданий переходим в форму задания
     if (freeWindowsData.type === "task" && freeWindowsData.taskDraft) {
+      // Обновляем время в taskDraft и сохраняем обратно в кэш
       const draft = freeWindowsData.taskDraft;
-      const params = new URLSearchParams({
-        subordinateId: String(draft.subordinateId),
-        subordinateUsername: draft.subordinateUsername,
-        subordinateFullname: draft.subordinateFullname,
-        date: `${y}-${m}-${d}`,
-        hour: slot.start.split(":")[0],
-        selectedTime: selectedTime,
-      });
-      window.location.hash = `#/task?${params.toString()}`;
+      const updatedDraft = { ...draft, time: selectedTime };
+      const updatedData = { ...freeWindowsData, taskDraft: updatedDraft };
+      
+      // Сохраняем обновлённые данные в кэш
+      setFreeWindowsToCache(draft.assigneeIds, updatedData);
+      
+      // Переходим на страницу заданий с параметром восстановления
+      window.location.hash = `#/task?restoreFromWindows=1&key=${encodeURIComponent(freeWindowsKey)}&selectedTime=${encodeURIComponent(selectedTime)}`;
       return;
     }
     
@@ -819,18 +826,21 @@ export const FormCalPage: React.FC = () => {
     }
   };
 
+  // Переход на страницу управления заданиями
+  const handleGoToTasks = () => {
+    // В режиме свободных окон восстанавливаем данные из freeWindowsCache
+    if (freeWindowsMode && freeWindowsKey) {
+      window.location.hash = `#/task?restoreKey=${encodeURIComponent(freeWindowsKey)}`;
+    } else {
+      window.location.hash = "#/task";
+    }
+  };
+
   // Переход к форме задания (для режима свободных окон type=task)
   const handleGoToTask = () => {
-    if (freeWindowsMode && freeWindowsData?.taskDraft) {
-      const draft = freeWindowsData.taskDraft;
-      // Переходим в форму задания с восстановлением данных
-      const params = new URLSearchParams({
-        subordinateId: String(draft.subordinateId),
-        subordinateUsername: draft.subordinateUsername,
-        subordinateFullname: draft.subordinateFullname,
-        restoreFromWindows: "1",
-      });
-      window.location.hash = `#/task?${params.toString()}`;
+    if (freeWindowsMode && freeWindowsKey && freeWindowsData?.taskDraft) {
+      // Переходим в форму задания с восстановлением данных из кэша
+      window.location.hash = `#/task?restoreFromWindows=1&key=${encodeURIComponent(freeWindowsKey)}`;
     } else {
       window.location.hash = "#/calendar";
     }
@@ -1299,8 +1309,23 @@ export const FormCalPage: React.FC = () => {
 
   // Обработка выхода из режима свободных окон (кнопка "Отмена")
   const handleExitFreeWindowsMode = () => {
-    // Для режима заданий - выходим в обычный календарь (кэш сохраняется)
+    // Для режима заданий - сохраняем черновик и выходим в обычный календарь
     if (freeWindowsData?.type === "task") {
+      // Сохраняем черновик задания в taskFormDraftCache (аналогично встречам)
+      if (freeWindowsData.taskDraft) {
+        saveTaskFormDraft({
+          selectedAssigneeIds: freeWindowsData.taskDraft.assigneeIds,
+          time: freeWindowsData.taskDraft.time,
+          duration: String(freeWindowsData.taskDraft.duration),
+          description: freeWindowsData.taskDraft.description,
+          editId: freeWindowsData.taskDraft.editId ?? null,
+          origDescription: freeWindowsData.taskDraft.origDescription,
+          origTime: freeWindowsData.taskDraft.origTime,
+          origDuration: freeWindowsData.taskDraft.origDuration,
+          origAssigneeIds: freeWindowsData.taskDraft.origAssigneeIds,
+        });
+      }
+      
       setFreeWindowsMode(false);
       setFreeWindowsKey(null);
       setFreeWindowsData(null);
@@ -1418,7 +1443,20 @@ export const FormCalPage: React.FC = () => {
             Встречи
           </button>
           <h2 style={{margin: 0, fontSize: '22px', fontWeight: '700', color: selectedEmployee?.isManager ? '#F57F17' : undefined}}>{selectedEmployee ? selectedEmployee.fullname : "Мой календарь"}</h2>
-          <div style={{width: 70}}></div>
+          <button
+            onClick={handleGoToTasks}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#007AFF',
+              fontSize: '14px',
+              cursor: 'pointer',
+              padding: 0,
+              fontWeight: 500,
+            }}
+          >
+            Задания
+          </button>
         </div>
       )}
       
@@ -1775,10 +1813,17 @@ export const FormCalPage: React.FC = () => {
                 <div style={{fontSize: '15px', color: '#333'}}>{selectedTask.assigner_fullname || selectedTask.assigner_username || '—'}</div>
               </div>
 
-              {/* Executor (Assignee) */}
+              {/* Executors (Assignees) */}
               <div style={{marginBottom: '20px'}}>
-                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>Исполнитель</div>
-                <div style={{fontSize: '15px', color: '#333'}}>{selectedTask.assignee_fullname || selectedTask.assignee_username || '—'}</div>
+                <div style={{fontSize: '12px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
+                  {selectedTask.assignees && selectedTask.assignees.length > 1 ? 'Исполнители' : 'Исполнитель'}
+                </div>
+                <div style={{fontSize: '15px', color: '#333'}}>
+                  {selectedTask.assignees && selectedTask.assignees.length > 0
+                    ? selectedTask.assignees.map(a => a.fullname || a.username).join(', ')
+                    : (selectedTask.assignee_fullname || selectedTask.assignee_username || '—')
+                  }
+                </div>
               </div>
 
               {/* Created At */}
@@ -1983,14 +2028,43 @@ export const FormCalPage: React.FC = () => {
                           const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
                           const d = String(selectedDate.getDate()).padStart(2, '0');
                           const dateStr = `${y}-${m}-${d}`;
-                          const hour = createMeetingPopup.hour;
+                          const hour = String(createMeetingPopup.hour).padStart(2, '0');
+                          const newTime = `${dateStr}T${hour}:00`;
                           
                           const p = createMeetingPopup.participant!;
-                          const url = `#/task?subordinateId=${p.id}&subordinateUsername=${encodeURIComponent(p.username)}&subordinateFullname=${encodeURIComponent(p.fullname)}&date=${dateStr}&hour=${hour}`;
+                          
+                          // Сохраняем/обновляем черновик задания перед переходом
+                          const existingDraft = getTaskFormDraft();
+                          if (existingDraft) {
+                            // Есть черновик — мержим: сохраняем описание и продолжительность, обновляем время и добавляем участника
+                            const mergedIds = existingDraft.selectedAssigneeIds.includes(p.id)
+                              ? existingDraft.selectedAssigneeIds
+                              : [...existingDraft.selectedAssigneeIds, p.id];
+                            saveTaskFormDraft({
+                              selectedAssigneeIds: mergedIds,
+                              time: newTime,
+                              duration: existingDraft.duration || '40',
+                              description: existingDraft.description || '',
+                              editId: existingDraft.editId,
+                              origDescription: existingDraft.origDescription,
+                              origTime: existingDraft.origTime,
+                              origDuration: existingDraft.origDuration,
+                              origAssigneeIds: existingDraft.origAssigneeIds,
+                            });
+                          } else {
+                            // Нет черновика — создаём новый с данными из календаря
+                            saveTaskFormDraft({
+                              selectedAssigneeIds: [p.id],
+                              time: newTime,
+                              duration: '40',
+                              description: '',
+                              editId: null,
+                            });
+                          }
                           
                           setCreateMeetingPopup(null);
                           setShowModal(false);
-                          window.location.hash = url;
+                          window.location.hash = '#/task';
                         }}
                         style={{
                           width: '100%',
