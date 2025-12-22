@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import "../styles/formPage.css";
 import { ScheduleInput, ScheduleDay, DEFAULT_SCHEDULE, validateSchedule } from "../components/ScheduleInput";
+import { useTelegramUser } from "../hooks/useTelegramUser";
+import { UserLoadingScreen } from "../components/UserLoadingScreen";
 
 const APIURL = import.meta.env.VITE_API_URL as string;
 
@@ -33,16 +35,7 @@ export const FormBossPage: React.FC = () => {
   // Флаг: было ли расписание в БД (для отображения предупреждения)
   const [hadScheduleInDb, setHadScheduleInDb] = useState<boolean>(true);
 
-  const [actorUsername, setActorUsername] = useState<string>("");
-  const [userTgId, setUserTgId] = useState<number | null>(null);
-
-  useEffect(() => {
-    const tg = (window as any).Telegram?.WebApp;
-    const uname = `@${tg?.initDataUnsafe?.user?.username}`;
-    const tgId = tg?.initDataUnsafe?.user?.id;
-    setActorUsername(uname);
-    setUserTgId(tgId ? Number(tgId) : null);
-  }, []);
+  const { username: actorUsername, tgId: userTgId, isLoading: tgLoading, error: tgError } = useTelegramUser();
 
   const [msgId, setMsgId] = useState<number | null>(null);
   const [urlCompanyId, setUrlCompanyId] = useState<number | null>(null);
@@ -254,27 +247,14 @@ export const FormBossPage: React.FC = () => {
     }
   };
 
-  if (loadingProfile) {
+  if (tgLoading || loadingProfile || tgError || !actorUsername) {
     return (
-      <div className="form-page">
-        <div className="form-container">
-          <h2>Мои данные</h2>
-          <div style={{ textAlign: "center", padding: "2rem", color: "#666" }}>
-            <div style={{ 
-              display: "inline-block",
-              width: "24px",
-              height: "24px",
-              border: "3px solid #e0e0e0",
-              borderTop: "3px solid #007aff",
-              borderRadius: "50%",
-              animation: "spin 1s linear infinite",
-              marginBottom: "12px"
-            }} />
-            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-            <div>Загрузка данных...</div>
-          </div>
-        </div>
-      </div>
+      <UserLoadingScreen
+        title="Мои данные"
+        isLoading={tgLoading || loadingProfile}
+        loadingMessage={tgLoading ? "Загрузка данных пользователя..." : "Загрузка данных..."}
+        error={tgError}
+      />
     );
   }
 

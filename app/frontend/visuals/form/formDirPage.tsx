@@ -1,25 +1,27 @@
 import React, { useState, useEffect } from "react";
 import { QuestionsInput } from "../components/QuestionsInput";
+import { useTelegramUser } from "../hooks/useTelegramUser";
+import { UserLoadingScreen } from "../components/UserLoadingScreen";
 import "../styles/formPage.css";
 const API_URL = import.meta.env.VITE_API_URL as string;
 
 export const FormDirPage: React.FC = () => {
+  const { username, tgId, isLoading: tgLoading, error: tgError } = useTelegramUser();
   const [employeeQuestions, setEmployeeQuestions] = useState<string[]>([""]);
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const tg = (window as any).Telegram?.WebApp;
-    const username = tg?.initDataUnsafe?.user?.username;
-    if (!username) return;
+  // Читаем параметр initial из URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const isInitial = urlParams.get('initial') === 'true';
 
-    // Используем @username, как в formEmpPage, т.к. в БД они так хранятся
-    const usernameWithAt = username.startsWith("@") ? username : `@${username}`;
+  useEffect(() => {
+    if (!username) return;
 
     setFetching(true);
     setError(null);
-    fetch(`${API_URL}/get_questions?username=${encodeURIComponent(usernameWithAt)}`)
+    fetch(`${API_URL}/get_questions?username=${encodeURIComponent(username)}`)
       .then(async (res) => {
         if (!res.ok) {
           throw new Error("Load failed");
@@ -43,7 +45,7 @@ export const FormDirPage: React.FC = () => {
       .finally(() => {
         setFetching(false);
       });
-  }, []);
+  }, [username]);
 
   const handleEmployeeQuestionChange = (index: number, value: string) => {
     const updated = [...employeeQuestions];
@@ -60,27 +62,16 @@ export const FormDirPage: React.FC = () => {
     setLoading(true);
 
     const questions = employeeQuestions.filter((q) => q.trim() !== "");
-    // if (!questions.length) {
-    //   alert("Добавьте хотя бы один вопрос для формы!");
-    //   return;
-    // }
-
     const questionsObj = Object.fromEntries(questions.map((q, i) => [String(i + 1), q])); // Чтобы сразу пронумерованные приходили
     const tg = (window as any).Telegram?.WebApp;
 
-    const username = tg?.initDataUnsafe?.user?.username;
-    if (!username) {
-      tg?.sendData(JSON.stringify({ action: 'create_questions', questions: questionsObj }));
-      return;
-    }
-
     try {
       const resp = await fetch(
-        `${API_URL}/create_questions?actor_username=${encodeURIComponent(username)}`,
+        `${API_URL}/create_questions?actor_username=${encodeURIComponent(username || "")}&initial=${isInitial}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ questions: questionsObj }),
+          body: JSON.stringify({ questions: questionsObj, user_tg_id: tgId }),
         }
       );
 
@@ -97,6 +88,17 @@ export const FormDirPage: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // Экран загрузки или ошибки пользователя Telegram
+  if (tgLoading || tgError || !username) {
+    return (
+      <UserLoadingScreen
+        title="Вопросы для сотрудников"
+        isLoading={tgLoading}
+        error={tgError}
+      />
+    );
+  }
 
   return (
     <div className="form-page">

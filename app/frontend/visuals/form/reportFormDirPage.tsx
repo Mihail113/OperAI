@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useTelegramUser } from "../hooks/useTelegramUser";
+import { UserLoadingScreen } from "../components/UserLoadingScreen";
 import "../styles/formPage.css";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
@@ -46,6 +48,7 @@ const AutoResizeTextarea: React.FC<{
 };
 
 export const ReportFormDirPage: React.FC = () => {
+  const { username, isLoading: tgLoading, error: tgError } = useTelegramUser();
   const [questions, setQuestions] = useState<string[]>([""]);
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(false);
@@ -64,17 +67,11 @@ export const ReportFormDirPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!period) return;
-
-    const tg = (window as any).Telegram?.WebApp;
-    const username = tg?.initDataUnsafe?.user?.username;
-    if (!username) return;
-
-    const usernameWithAt = username.startsWith("@") ? username : `@${username}`;
+    if (!period || !username) return;
 
     setFetching(true);
     setError(null);
-    fetch(`${API_URL}/get_report_form_questions?username=${encodeURIComponent(usernameWithAt)}&period=${encodeURIComponent(period)}`)
+    fetch(`${API_URL}/get_report_form_questions?username=${encodeURIComponent(username)}&period=${encodeURIComponent(period)}`)
       .then(async (res) => {
         if (!res.ok) {
           throw new Error("Ошибка загрузки");
@@ -97,7 +94,7 @@ export const ReportFormDirPage: React.FC = () => {
       .finally(() => {
         setFetching(false);
       });
-  }, [period]);
+  }, [period, username]);
 
   const handleQuestionChange = (index: number, value: string) => {
     const updated = [...questions];
@@ -125,17 +122,11 @@ export const ReportFormDirPage: React.FC = () => {
     );
 
     const tg = (window as any).Telegram?.WebApp;
-    const username = tg?.initDataUnsafe?.user?.username;
     const userTgId = tg?.initDataUnsafe?.user?.id;
-    
-    if (!username) {
-      tg?.sendData(JSON.stringify({ action: 'create_report_form', questions: questionsObj, period }));
-      return;
-    }
 
     try {
       const resp = await fetch(
-        `${API_URL}/create_report_form_questions?actor_username=${encodeURIComponent(username)}&period=${encodeURIComponent(period)}`,
+        `${API_URL}/create_report_form_questions?actor_username=${encodeURIComponent(username || "")}&period=${encodeURIComponent(period)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -158,6 +149,17 @@ export const ReportFormDirPage: React.FC = () => {
   };
 
   const periodName = period ? (PERIOD_NAMES[period] || period) : "";
+
+  // Экран загрузки или ошибки пользователя Telegram
+  if (tgLoading || tgError || !username) {
+    return (
+      <UserLoadingScreen
+        title="Форма отчётности"
+        isLoading={tgLoading}
+        error={tgError}
+      />
+    );
+  }
 
   return (
     <div className="form-page">

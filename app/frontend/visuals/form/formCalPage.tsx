@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import "../styles/formPage.css";
+import { useTelegramUser } from "../hooks/useTelegramUser";
+import { UserLoadingScreen } from "../components/UserLoadingScreen";
 import {
   ScheduleDay,
   ScheduleInterval,
@@ -56,7 +58,7 @@ export const FormCalPage: React.FC = () => {
   const [schedule, setSchedule] = useState<ScheduleDay[]>([]);
 
   const [myUserId, setMyUserId] = useState<number | null>(null); // получение ID начальника
-  const [myUsername, setMyUsername] = useState<string | null>(null);
+  const { username: myUsername, isLoading: tgLoading, error: tgError } = useTelegramUser();
   const [subordinates, setSubordinates] = useState<Employee[]>([]);
   
   const [isInitLoading, setIsInitLoading] = useState(true); // Первая загрузка (ID)
@@ -142,25 +144,17 @@ export const FormCalPage: React.FC = () => {
   }, []);
 
 
-// 1. Инициализация: Получаем Username -> ID, список подчиненных и данные начальника
+// 1. Инициализация: Получаем ID, список подчиненных и данные начальника
   useEffect(() => {
+    // Ждём пока хук useTelegramUser получит username
+    if (!myUsername) return;
+
     const controller = new AbortController();
-    
+
     const init = async () => {
-      const tg = (window as any).Telegram?.WebApp;
-      const user = tg?.initDataUnsafe?.user;
-      const username = user?.username ? `@${user.username}` : null;
-      // const username = "@riftinink"; // Для тестов локально
-
-      if (!username) {
-        setIsInitLoading(false);
-        return;
-      }
-      setMyUsername(username);
-
       try {
         // 1. Проверяем кэш подчиненных
-        const cachedSubordinates = getSubordinatesFromCache(username);
+        const cachedSubordinates = getSubordinatesFromCache(myUsername);
         let managerId: number | null = null;
         let subordinatesList: Employee[] = [];
 
@@ -170,7 +164,7 @@ export const FormCalPage: React.FC = () => {
           subordinatesList = cachedSubordinates.subordinates;
         } else {
           // Загружаем с сервера
-          const res = await fetch(`${API_URL}/get_subordinates?username=${username}`, { signal: controller.signal });
+          const res = await fetch(`${API_URL}/get_subordinates?username=${myUsername}`, { signal: controller.signal });
           if (!res.ok) throw new Error("Failed to load profile");
           const data = await res.json();
 
@@ -179,7 +173,7 @@ export const FormCalPage: React.FC = () => {
 
           // Сохраняем в кэш
           if (managerId) {
-            setSubordinatesToCache(username, managerId, subordinatesList);
+            setSubordinatesToCache(myUsername, managerId, subordinatesList);
           }
         }
 
@@ -245,9 +239,9 @@ export const FormCalPage: React.FC = () => {
     };
 
     init();
-    
+
     return () => controller.abort();
-  }, []);
+  }, [myUsername]);
 
   // 2. Загрузка данных при смене месяца или сотрудника (с кэшированием)
   useEffect(() => {
@@ -1358,6 +1352,17 @@ export const FormCalPage: React.FC = () => {
     setActiveFreeWindowsKey(null);
     window.location.hash = "#/calendar";
   };
+
+  // Показываем экран загрузки пока хук получает данные пользователя
+  if (tgLoading || tgError || !myUsername) {
+    return (
+      <UserLoadingScreen
+        title="Календарь"
+        isLoading={tgLoading}
+        error={tgError}
+      />
+    );
+  }
 
   return (
     <div style={{ padding: '20px', maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, -apple-system, sans-serif' }}>

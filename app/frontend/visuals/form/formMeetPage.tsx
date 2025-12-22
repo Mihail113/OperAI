@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "../styles/formPage.css";
+import { useTelegramUser } from "../hooks/useTelegramUser";
+import { UserLoadingScreen } from "../components/UserLoadingScreen";
 import {
   Meeting,
   Participant,
@@ -303,11 +305,8 @@ export const FormMeetPage: React.FC = () => {
     return { added, removed };
   };
 
-  // Получаем username из Telegram WebApp (или из вашего стейта/контекста)
-  const username = useMemo(() => {
-    const tg = (window as any).Telegram?.WebApp;
-    return `@${tg?.initDataUnsafe?.user?.username}`;
-  }, []);
+  // Получаем username из Telegram WebApp
+  const { username, isLoading: tgLoading, error: tgError } = useTelegramUser();
 
   const fetchMeetings = useCallback(async (creatorId: number, forceRefresh = false) => {
     // Проверяем кэш (если не форсированное обновление)
@@ -342,6 +341,9 @@ export const FormMeetPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Ждём пока хук useTelegramUser получит username
+    if (!username) return;
+
     // Сначала проверяем кэш
     const cachedData = getSubordinatesFromCache(username);
     if (cachedData) {
@@ -1502,6 +1504,17 @@ export const FormMeetPage: React.FC = () => {
     // Переходим в календарь в режиме свободных окон
     window.location.hash = `#/calendar?mode=freeWindows&key=${encodeURIComponent(cacheKey)}&duration=${durationNum}`;
   };
+
+  // Экран загрузки или ошибки пользователя Telegram
+  if (tgLoading || tgError || !username) {
+    return (
+      <UserLoadingScreen
+        title="Назначить встречу"
+        isLoading={tgLoading}
+        error={tgError}
+      />
+    );
+  }
 
   return (
     <div className="form-page">

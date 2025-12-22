@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "../styles/formPage.css";
+import { useTelegramUser } from "../hooks/useTelegramUser";
+import { UserLoadingScreen } from "../components/UserLoadingScreen";
 import {
   Task,
   Meeting,
@@ -338,8 +340,7 @@ const timeToMinutes = (timeStr: string): number => {
 
 export const FormTaskPage: React.FC = () => {
   // Данные пользователя
-  const tg = useMemo(() => (window as any).Telegram?.WebApp, []);
-  const username = useMemo(() => `@${tg?.initDataUnsafe?.user?.username}`, [tg]);
+  const { username, isLoading: tgLoading, error: tgError } = useTelegramUser();
 
   // Состояние списка заданий
   const [tasks, setTasks] = useState<TaskWithAssignees[]>([]);
@@ -390,6 +391,9 @@ export const FormTaskPage: React.FC = () => {
 
   // Загрузка подчиненных
   useEffect(() => {
+    // Ждём пока хук useTelegramUser получит username
+    if (!username) return;
+
     const cached = getSubordinatesFromCache(username);
     if (cached) {
       setSubordinates(cached.subordinates);
@@ -399,14 +403,14 @@ export const FormTaskPage: React.FC = () => {
 
     const fetchSubordinates = async () => {
       try {
-        const resp = await fetch(`${API_URL}/get_workers_by_creator?username=${encodeURIComponent(username)}`);
+        const resp = await fetch(`${API_URL}/get_subordinates?username=${encodeURIComponent(username)}`);
         if (!resp.ok) return;
         const data = await resp.json();
-        const subs: Subordinate[] = (data.workers || []).map((w: any) => ({
+        const subs: Subordinate[] = (data.subordinates || []).map((w: any) => ({
           id: w.id,
           username: w.username,
           fullname: w.fullname,
-          isManager: false,
+          isManager: w.isManager,
         }));
         const mgrId = data.manager_id || null;
         setSubordinates(subs);
@@ -1257,6 +1261,17 @@ export const FormTaskPage: React.FC = () => {
     }
     window.location.hash = "#/calendar";
   }, [description, time, duration, selectedAssigneeIds, editId, origDescription, origTime, origDuration, origAssigneeIds, inFreeWindowsMode, saveFormToFreeWindowsCache]);
+
+  // Экран загрузки или ошибки пользователя Telegram
+  if (tgLoading || tgError || !username) {
+    return (
+      <UserLoadingScreen
+        title="Новое задание"
+        isLoading={tgLoading}
+        error={tgError}
+      />
+    );
+  }
 
   return (
     <div className="form-page">

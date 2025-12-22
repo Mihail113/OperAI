@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useTelegramUser } from "../hooks/useTelegramUser";
+import { UserLoadingScreen } from "../components/UserLoadingScreen";
 import "../styles/formPage.css";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
@@ -50,22 +52,17 @@ const AutoResizeTextarea: React.FC<{
 };
 
 export const ReportSubmitPage: React.FC = () => {
+  const { username, isLoading: tgLoading, error: tgError } = useTelegramUser();
   const [questions, setQuestions] = useState<string[]>([]);
   const [answers, setAnswers] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [period, setPeriod] = useState<string>("");
-  const [actorUsername, setActorUsername] = useState<string>("");
   const [fullName, setFullName] = useState<string | null>(null);
 
+  // Читаем period из URL
   useEffect(() => {
-    const tg = (window as any).Telegram?.WebApp;
-    const username = tg?.initDataUnsafe?.user?.username;
-    const uname = username ? (username.startsWith("@") ? username : `@${username}`) : "";
-    setActorUsername(uname);
-
-    // Читаем period из URL
     const params = new URLSearchParams(window.location.search);
     const periodParam = params.get("period");
     if (periodParam) {
@@ -74,13 +71,13 @@ export const ReportSubmitPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!actorUsername || !period) return;
+    if (!username || !period) return;
 
     setLoading(true);
     setError(null);
-    
+
     // include_full_name=true для получения полного имени вместе с вопросами
-    fetch(`${API_URL}/get_report_form_questions?username=${encodeURIComponent(actorUsername)}&period=${encodeURIComponent(period)}&include_full_name=true`)
+    fetch(`${API_URL}/get_report_form_questions?username=${encodeURIComponent(username)}&period=${encodeURIComponent(period)}&include_full_name=true`)
       .then(async (res) => {
         if (!res.ok) {
           throw new Error("Ошибка загрузки вопросов");
@@ -107,7 +104,7 @@ export const ReportSubmitPage: React.FC = () => {
       .finally(() => {
         setLoading(false);
       });
-  }, [actorUsername, period]);
+  }, [username, period]);
 
   const handleAnswerChange = (index: number, value: string) => {
     const updated = [...answers];
@@ -120,14 +117,7 @@ export const ReportSubmitPage: React.FC = () => {
     setSubmitting(true);
 
     const tg = (window as any).Telegram?.WebApp;
-    const username = tg?.initDataUnsafe?.user?.username;
     const userId = tg?.initDataUnsafe?.user?.id;
-    
-    if (!username) {
-      alert("Не удалось определить пользователя");
-      setSubmitting(false);
-      return;
-    }
 
     // Формируем объект ответов
     const answersObj: Record<string, string> = {};
@@ -143,7 +133,7 @@ export const ReportSubmitPage: React.FC = () => {
 
     try {
       const resp = await fetch(
-        `${API_URL}/submit_report_answers?actor_username=${encodeURIComponent(username)}&period=${encodeURIComponent(period)}`,
+        `${API_URL}/submit_report_answers?actor_username=${encodeURIComponent(username || "")}&period=${encodeURIComponent(period)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -166,28 +156,15 @@ export const ReportSubmitPage: React.FC = () => {
     }
   };
 
-  // Экран загрузки
-  if (loading) {
+  // Экран загрузки или ошибки пользователя Telegram
+  if (tgLoading || loading || tgError || !username) {
     return (
-      <div className="form-page">
-        <div className="form-container">
-          <h2>Отчет</h2>
-          <div style={{ textAlign: "center", padding: "2rem", color: "#666" }}>
-            <div style={{ 
-              display: "inline-block",
-              width: "24px",
-              height: "24px",
-              border: "3px solid #e0e0e0",
-              borderTop: "3px solid #007aff",
-              borderRadius: "50%",
-              animation: "spin 1s linear infinite",
-              marginBottom: "12px"
-            }} />
-            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-            <div>Загрузка вопросов...</div>
-          </div>
-        </div>
-      </div>
+      <UserLoadingScreen
+        title="Отчет"
+        isLoading={tgLoading || loading}
+        loadingMessage={tgLoading ? "Загрузка данных пользователя..." : "Загрузка вопросов..."}
+        error={tgError}
+      />
     );
   }
 
